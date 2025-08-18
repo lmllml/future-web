@@ -1,5 +1,5 @@
-import Link from 'next/link'
-import { Button } from '@/components/ui/button'
+import Link from "next/link";
+import { Button } from "@/components/ui/button";
 
 export default function AiReplayIndexPage() {
   return (
@@ -17,9 +17,10 @@ export default function AiReplayIndexPage() {
         <Button variant="outline" asChild>
           <Link href="/ai-replay/compare">策略对比</Link>
         </Button>
+        <Button variant="ghost" asChild>
+          <Link href="/ai-replay/user-trades">用户交易记录</Link>
+        </Button>
       </div>
     </div>
-  )
+  );
 }
-
-

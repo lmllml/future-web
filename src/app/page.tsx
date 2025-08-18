@@ -6,7 +6,5 @@ export default function HomePage() {
         欢迎使用 AI 交易复盘与量化工具集。
       </p>
     </main>
-  )
+  );
 }
-
-
