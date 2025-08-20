@@ -14,7 +14,11 @@ export default function RootLayout(
   return (
     <html lang="zh-CN" suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased">
-        <NuqsAdapter>{children}</NuqsAdapter>
+        <NuqsAdapter>
+          <main className="mx-auto max-w-6xl px-4 md:px-6 py-6">
+            {children}
+          </main>
+        </NuqsAdapter>
       </body>
     </html>
   );

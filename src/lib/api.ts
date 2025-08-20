@@ -25,3 +25,11 @@ export async function getCryptoJson<T>(
     throw new Error(`Request failed: ${res.status} ${res.statusText}`);
   return res.json() as Promise<T>;
 }
+
+export const cryptoApi = {
+  listRoundPnl: <T>(params: FetchParams) =>
+    getCryptoJson<T>("/round-pnl", params),
+  listKlines: <T>(params: FetchParams) => getCryptoJson<T>("/klines", params),
+  listUserTrades: <T>(params: FetchParams) =>
+    getCryptoJson<T>("/user-trades", params),
+};
