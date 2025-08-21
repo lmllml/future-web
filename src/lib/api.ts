@@ -20,9 +20,22 @@ export async function getCryptoJson<T>(
   const base =
     process.env.NEXT_PUBLIC_CRYPTO_SERVER_ORIGIN || "http://127.0.0.1:3101";
   const url = `${base}/api/crypto${path}${buildQuery(params)}`;
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok)
-    throw new Error(`Request failed: ${res.status} ${res.statusText}`);
+  
+  console.log(`🚀 API Call: ${url}`); // 调试日志
+  
+  const res = await fetch(url, { 
+    cache: "no-store",
+    headers: {
+      'Accept': 'application/json',
+      'Content-Type': 'application/json',
+    }
+  });
+  
+  if (!res.ok) {
+    const errorText = await res.text().catch(() => `HTTP ${res.status}`);
+    throw new Error(`Request failed: ${res.status} ${res.statusText}\n${errorText}`);
+  }
+  
   return res.json() as Promise<T>;
 }
 
