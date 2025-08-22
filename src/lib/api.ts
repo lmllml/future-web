@@ -45,4 +45,6 @@ export const cryptoApi = {
   listKlines: <T>(params: FetchParams) => getCryptoJson<T>("/klines", params),
   listUserTrades: <T>(params: FetchParams) =>
     getCryptoJson<T>("/user-trades", params),
+  getTradesByIds: <T>(params: FetchParams) =>
+    getCryptoJson<T>("/trades-by-ids", params),
 };
