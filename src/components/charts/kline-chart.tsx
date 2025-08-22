@@ -780,7 +780,7 @@ export function KlineChart({
       )}
 
       {showRangeSelector && onRangeApply && (
-        <div className="absolute top-[6.5rem] left-2 z-10 bg-background/90 rounded px-2 py-1 flex items-center gap-2 text-xs border shadow-sm">
+        <div className="absolute top-2 left-1/2 transform -translate-x-1/2 z-10 bg-background/90 rounded px-2 py-1 flex items-center gap-2 text-xs border shadow-sm">
           <span className="text-muted-foreground">时间段:</span>
           <input
             type="datetime-local"
@@ -818,7 +818,7 @@ export function KlineChart({
 
       <div ref={containerRef} style={{ height, width: "100%" }} />
 
-      <div className="absolute top-2 right-2 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
+      <div className="absolute top-2 right-16 text-xs text-muted-foreground bg-background/80 px-2 py-1 rounded">
         <div className="text-center">
           <div>
             {symbol} - {market === "futures" ? "期货" : "现货"}
