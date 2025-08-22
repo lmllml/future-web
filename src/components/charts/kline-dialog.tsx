@@ -321,7 +321,7 @@ export function KlineDialog({
               <KlineChart
                 key={`chart-${currentSymbol}-${currentMarket}-${isFullscreen}`}
                 data={displayKlines}
-                height={isFullscreen ? 600 : 400}
+                height={isFullscreen ? 700 : 500}
                 entryPrice={round.avgEntryPrice}
                 exitPrice={round.avgExitPrice}
                 className="w-full h-full"
@@ -362,7 +362,7 @@ export function KlineDialog({
 
         {/* 底部统计信息 */}
         {displayKlines.length > 0 && (
-          <div className="border-t pt-3 text-xs text-muted-foreground pr-16">
+          <div className="border-t pt-3 text-xs text-muted-foreground pr-10">
             <div className="flex justify-between items-center">
               <div className="flex gap-6">
                 <span>K线数量: {displayKlines.length} 根</span>
@@ -392,15 +392,15 @@ export function KlineDialog({
         <button
           onClick={toggleFullscreen}
           className={`absolute ${
-            displayKlines.length > 0 ? "bottom-24" : "bottom-6"
-          } right-6 p-3 bg-white/95 hover:bg-white shadow-xl rounded-full transition-all duration-200 hover:scale-110 z-30 border border-gray-200`}
+            displayKlines.length > 0 ? "bottom-[4.5rem]" : "bottom-4"
+          } right-4 p-2 bg-white/95 hover:bg-white shadow-lg rounded-full transition-all duration-200 hover:scale-110 z-30 border border-gray-200`}
           title={isFullscreen ? "退出全屏 (Esc)" : "进入全屏 (Ctrl+Enter)"}
           aria-label={isFullscreen ? "退出全屏" : "进入全屏"}
         >
           {isFullscreen ? (
             <svg
-              width="20"
-              height="20"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -410,8 +410,8 @@ export function KlineDialog({
             </svg>
           ) : (
             <svg
-              width="20"
-              height="20"
+              width="16"
+              height="16"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -426,14 +426,14 @@ export function KlineDialog({
         <button
           onClick={() => setFocusSignal((v) => v + 1)}
           className={`absolute ${
-            displayKlines.length > 0 ? "bottom-24" : "bottom-6"
-          } right-20 p-3 bg-white/95 hover:bg-white shadow-xl rounded-full transition-all duration-200 hover:scale-110 z-30 border border-gray-200`}
+            displayKlines.length > 0 ? "bottom-[4.5rem]" : "bottom-4"
+          } right-16 p-2 bg-white/95 hover:bg-white shadow-lg rounded-full transition-all duration-200 hover:scale-110 z-30 border border-gray-200`}
           title="定位到开/平仓区间"
           aria-label="定位到开/平仓区间"
         >
           <svg
-            width="20"
-            height="20"
+            width="16"
+            height="16"
             viewBox="0 0 24 24"
             fill="none"
             stroke="currentColor"

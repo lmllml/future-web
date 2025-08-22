@@ -174,7 +174,8 @@ export function KlineChart({
         },
         rightPriceScale: {
           borderColor: "#e2e8f0",
-          scaleMargins: { top: 0.1, bottom: 0.1 },
+          // 减少底部空间，让K线图占据更多区域
+          scaleMargins: { top: 0.08, bottom: 0.15 },
         },
         timeScale: {
           borderColor: "#e2e8f0",
@@ -202,6 +203,19 @@ export function KlineChart({
 
       chartRef.current = chart;
       seriesRef.current = series;
+
+      // 在底部添加quoteVolume柱状图
+      try {
+        chart.priceScale("volume").applyOptions({
+          scaleMargins: { top: 0.85, bottom: 0 },
+          borderVisible: false,
+        } as any);
+        (chart as any).__volumeSeries = (chart as any).addHistogramSeries({
+          priceScaleId: "volume",
+          priceFormat: { type: "volume" } as any,
+          base: 0,
+        });
+      } catch {}
 
       // 监听左右滑动以动态加载
       const timeScale = chart.timeScale();
@@ -267,6 +281,23 @@ export function KlineChart({
           );
           (series as any).setData(sorted);
           lastCandlesRef.current = sorted;
+
+          // 初始化时同步设置quoteVolume
+          try {
+            const volSeries = (chart as any).__volumeSeries;
+            if (volSeries) {
+              const volData = data.map((k) => {
+                const t = Math.floor(new Date(k.openTime).getTime() / 1000);
+                const isUp = Number(k.close) >= Number(k.open);
+                return {
+                  time: t as any,
+                  value: Number(k.quoteVolume) || 0,
+                  color: isUp ? "#22c55e66" : "#ef444466",
+                };
+              });
+              volSeries.setData(volData);
+            }
+          } catch {}
 
           // 如果有开仓时间和平仓时间，聚焦到该时间段
           if (entryTime && exitTime) {
@@ -343,6 +374,23 @@ export function KlineChart({
       const sorted = transformed.sort((a, b) => a.time - b.time);
       (series as any).setData(sorted);
       lastCandlesRef.current = sorted;
+
+      // 更新quoteVolume
+      try {
+        const volSeries = (chart as any).__volumeSeries;
+        if (volSeries) {
+          const volData = data.map((k) => {
+            const t = Math.floor(new Date(k.openTime).getTime() / 1000);
+            const isUp = Number(k.close) >= Number(k.open);
+            return {
+              time: t as any,
+              value: Number(k.quoteVolume) || 0,
+              color: isUp ? "#22c55e66" : "#ef444466",
+            };
+          });
+          volSeries.setData(volData);
+        }
+      } catch {}
 
       // 首次设置或数据源从空到有，自动适配可视区域
       if (!prevLenRef.current || prevLenRef.current === 0) {
