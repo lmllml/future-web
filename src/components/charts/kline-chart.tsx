@@ -4,7 +4,7 @@ import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import { KlineData } from "@/lib/types";
 import type { IChartApi, ISeriesApi } from "lightweight-charts";
-import { createSeriesMarkers } from "lightweight-charts";
+import { createSeriesMarkers, HistogramSeries } from "lightweight-charts";
 
 export type TimeFrame = "1m" | "15m" | "1h" | "1d";
 export type MarketType = "futures" | "spot";
@@ -129,6 +129,7 @@ export function KlineChart({
   const prevLenRef = useRef<number>(0);
   const rangeDraftRef = useRef<{ start?: string; end?: string }>({});
   const lastCandlesRef = useRef<any[]>([]);
+  const tooltipRef = useRef<HTMLDivElement | null>(null);
 
   // 跟踪外部加载状态，避免滑动时重复触发
   useEffect(() => {
@@ -174,15 +175,23 @@ export function KlineChart({
         },
         rightPriceScale: {
           borderColor: "#e2e8f0",
-          // 减少底部空间，让K线图占据更多区域
-          scaleMargins: { top: 0.08, bottom: 0.15 },
+          // 为成交量预留底部空间
+          scaleMargins: { top: 0.08, bottom: 0.3 },
         },
         timeScale: {
           borderColor: "#e2e8f0",
           timeVisible: true,
           secondsVisible: false,
         },
-        crosshair: { mode: 1 },
+        crosshair: {
+          mode: 1, // Magnet mode - 吸附到数据点
+          vertLine: {
+            labelVisible: true,
+          },
+          horzLine: {
+            labelVisible: true,
+          },
+        },
         handleScroll: { mouseWheel: true, pressedMouseMove: true },
         handleScale: {
           axisPressedMouseMove: true,
@@ -204,18 +213,53 @@ export function KlineChart({
       chartRef.current = chart;
       seriesRef.current = series;
 
+      // 创建tooltip元素
+      if (!tooltipRef.current && containerRef.current) {
+        const tooltip = document.createElement("div");
+        tooltip.style.cssText = `
+          position: absolute;
+          display: none;
+          padding: 8px 12px;
+          background: rgba(0, 0, 0, 0.9);
+          color: white;
+          border-radius: 4px;
+          font-size: 12px;
+          pointer-events: none;
+          z-index: 1000;
+          max-width: 300px;
+          box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
+          line-height: 1.4;
+        `;
+        containerRef.current.appendChild(tooltip);
+        tooltipRef.current = tooltip;
+      }
+
       // 在底部添加quoteVolume柱状图
       try {
-        chart.priceScale("volume").applyOptions({
-          scaleMargins: { top: 0.85, bottom: 0 },
-          borderVisible: false,
-        } as any);
-        (chart as any).__volumeSeries = (chart as any).addHistogramSeries({
-          priceScaleId: "volume",
-          priceFormat: { type: "volume" } as any,
-          base: 0,
+        // 添加成交量柱状图系列作为覆盖层
+        const volumeSeries = chart.addSeries(HistogramSeries, {
+          priceFormat: {
+            type: "volume",
+          },
+          priceScaleId: "", // 设置为空字符串作为覆盖层
+          color: "#26a69a",
         });
-      } catch {}
+
+        // 配置成交量系列的位置
+        volumeSeries.priceScale().applyOptions({
+          scaleMargins: {
+            top: 0.7, // 最高点距离顶部70%
+            bottom: 0, // 最低点在底部
+          },
+          borderVisible: false,
+          visible: true, // 确保价格轴可见
+        });
+
+        (chart as any).__volumeSeries = volumeSeries;
+        console.log("成交量柱状图创建成功");
+      } catch (error) {
+        console.error("创建成交量柱状图失败:", error);
+      }
 
       // 监听左右滑动以动态加载
       const timeScale = chart.timeScale();
@@ -262,6 +306,121 @@ export function KlineChart({
 
       timeScale.subscribeVisibleLogicalRangeChange(handleRange);
 
+      // 监听鼠标移动，显示包含成交量的tooltip
+      chart.subscribeCrosshairMove((param) => {
+        const tooltip = tooltipRef.current;
+        if (!tooltip) return;
+
+        if (
+          param.point === undefined ||
+          !param.time ||
+          param.point.x < 0 ||
+          param.point.y < 0
+        ) {
+          tooltip.style.display = "none";
+          return;
+        }
+
+        try {
+          // 获取K线数据
+          const candleData = param.seriesData.get(series) as any;
+
+          // 根据时间找到原始K线数据中的成交量
+          const currentTime =
+            typeof param.time === "number"
+              ? param.time
+              : typeof param.time === "string"
+              ? new Date(param.time).getTime() / 1000
+              : param.time && typeof param.time === "object" && param.time.year
+              ? new Date(
+                  param.time.year,
+                  param.time.month - 1,
+                  param.time.day
+                ).getTime() / 1000
+              : 0;
+
+          const currentKline = data.find((k) => {
+            const klineTime = Math.floor(new Date(k.openTime).getTime() / 1000);
+            return Math.abs(klineTime - currentTime) <= 30; // 允许30秒的误差
+          });
+
+          if (candleData && currentKline) {
+            const formatTime = (timestamp: any) => {
+              let date: Date;
+              if (typeof timestamp === "number") {
+                date = new Date(timestamp * 1000);
+              } else if (typeof timestamp === "string") {
+                date = new Date(timestamp);
+              } else if (
+                timestamp &&
+                typeof timestamp === "object" &&
+                timestamp.year
+              ) {
+                // BusinessDay type
+                date = new Date(
+                  timestamp.year,
+                  timestamp.month - 1,
+                  timestamp.day
+                );
+              } else {
+                date = new Date();
+              }
+              return date.toLocaleString("zh-CN", {
+                month: "2-digit",
+                day: "2-digit",
+                hour: "2-digit",
+                minute: "2-digit",
+              });
+            };
+
+            const formatNumber = (num: number) => {
+              if (num >= 1e9) return (num / 1e9).toFixed(2) + "B";
+              if (num >= 1e6) return (num / 1e6).toFixed(2) + "M";
+              if (num >= 1e3) return (num / 1e3).toFixed(2) + "K";
+              return num.toFixed(2);
+            };
+
+            tooltip.innerHTML = `
+              <div><strong>${formatTime(currentTime)}</strong></div>
+              <div>开: ${candleData.open.toFixed(4)}</div>
+              <div>高: ${candleData.high.toFixed(4)}</div>
+              <div>低: ${candleData.low.toFixed(4)}</div>
+              <div>收: ${candleData.close.toFixed(4)}</div>
+              <div><strong>成交量: ${formatNumber(
+                currentKline.quoteVolume
+              )}</strong></div>
+              <div>交易笔数: ${currentKline.trades}</div>
+            `;
+
+            tooltip.style.display = "block";
+
+            // 智能定位tooltip，避免超出边界
+            const containerRect = containerRef.current?.getBoundingClientRect();
+            let left = param.point.x + 10;
+            let top = param.point.y - 10;
+
+            if (containerRect) {
+              // 如果tooltip会超出右边界，显示在鼠标左侧
+              if (left + 300 > containerRect.width) {
+                left = param.point.x - 310;
+              }
+              // 如果tooltip会超出上边界，显示在鼠标下方
+              if (top < 0) {
+                top = param.point.y + 20;
+              }
+            }
+
+            tooltip.style.left = Math.max(0, left) + "px";
+            tooltip.style.top = Math.max(0, top) + "px";
+          } else {
+            tooltip.style.display = "none";
+          }
+        } catch (error) {
+          console.warn("显示tooltip失败:", error);
+          tooltip.style.display = "none";
+        }
+      });
+
       // 监听容器尺寸变化
       const ro = new ResizeObserver(() => {
         if (!chartRef.current || !containerRef.current) return;
@@ -289,15 +448,19 @@ export function KlineChart({
               const volData = data.map((k) => {
                 const t = Math.floor(new Date(k.openTime).getTime() / 1000);
                 const isUp = Number(k.close) >= Number(k.open);
+                const volume = Number(k.quoteVolume) || 0;
                 return {
                   time: t as any,
-                  value: Number(k.quoteVolume) || 0,
-                  color: isUp ? "#22c55e66" : "#ef444466",
+                  value: volume,
+                  color: isUp ? "#22c55e80" : "#ef444480",
                 };
               });
               volSeries.setData(volData);
+              console.log("初始化成交量数据:", volData.length, "条");
             }
-          } catch {}
+          } catch (error) {
+            console.error("设置初始成交量数据失败:", error);
+          }
 
           // 如果有开仓时间和平仓时间，聚焦到该时间段
           if (entryTime && exitTime) {
@@ -346,6 +509,13 @@ export function KlineChart({
         resizeObserverRef.current?.disconnect();
       } catch {}
       try {
+        // 清理tooltip
+        if (tooltipRef.current && containerRef.current) {
+          containerRef.current.removeChild(tooltipRef.current);
+          tooltipRef.current = null;
+        }
+      } catch {}
+      try {
         chartRef.current?.remove?.();
       } catch {}
       chartRef.current = null;
@@ -382,15 +552,24 @@ export function KlineChart({
           const volData = data.map((k) => {
             const t = Math.floor(new Date(k.openTime).getTime() / 1000);
             const isUp = Number(k.close) >= Number(k.open);
+            const volume = Number(k.quoteVolume) || 0;
             return {
               time: t as any,
-              value: Number(k.quoteVolume) || 0,
-              color: isUp ? "#22c55e66" : "#ef444466",
+              value: volume,
+              color: isUp ? "#22c55e80" : "#ef444480",
             };
           });
           volSeries.setData(volData);
+          console.log(
+            "更新成交量数据:",
+            volData.length,
+            "条, 样本:",
+            volData.slice(0, 3)
+          );
         }
-      } catch {}
+      } catch (error) {
+        console.error("更新成交量数据失败:", error);
+      }
 
       // 首次设置或数据源从空到有，自动适配可视区域
       if (!prevLenRef.current || prevLenRef.current === 0) {
