@@ -341,6 +341,7 @@ export function KlineDialog({
                 entryTime={round.openTime}
                 exitTime={round.closeTime}
                 focusRangeSignal={focusSignal}
+                useTimeMarkersOnly={currentSymbol !== round.symbol}
                 totalQuantity={round.totalQuantity}
                 totalFees={round.totalFees}
                 realizedPnl={round.realizedPnl}

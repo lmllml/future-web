@@ -8,6 +8,8 @@ export default function RoundPnlPage({
     symbol?: string;
     minPnl?: string;
     maxPnl?: string;
+    minQuantity?: string;
+    maxQuantity?: string;
     sort?: string;
     positionSide?: string;
   };
@@ -17,6 +19,8 @@ export default function RoundPnlPage({
     v === undefined || v === "" ? undefined : Number(v);
   const minPnl = toNum(searchParams.minPnl);
   const maxPnl = toNum(searchParams.maxPnl);
+  const minQuantity = toNum(searchParams.minQuantity);
+  const maxQuantity = toNum(searchParams.maxQuantity);
   const sort =
     typeof searchParams.sort === "string" && searchParams.sort
       ? searchParams.sort
@@ -37,6 +41,8 @@ export default function RoundPnlPage({
         symbol={symbol}
         minPnl={minPnl}
         maxPnl={maxPnl}
+        minQuantity={minQuantity}
+        maxQuantity={maxQuantity}
         sort={sort}
         positionSide={positionSide}
       />

@@ -16,6 +16,8 @@ export function FilterBar({ defaultSymbol }: Props) {
     symbol: parseAsString.withDefault(defaultSymbol),
     minPnl: parseAsString.withDefault(""),
     maxPnl: parseAsString.withDefault(""),
+    minQuantity: parseAsString.withDefault(""),
+    maxQuantity: parseAsString.withDefault(""),
     sort: parseAsString.withDefault("time-desc"),
     positionSide: parseAsString.withDefault("ALL"),
   });
@@ -23,12 +25,22 @@ export function FilterBar({ defaultSymbol }: Props) {
   const [symbol, setSymbol] = useState(q.symbol || defaultSymbol);
   const [minPnl, setMinPnl] = useState<string>(q.minPnl ?? "");
   const [maxPnl, setMaxPnl] = useState<string>(q.maxPnl ?? "");
+  const [minQuantity, setMinQuantity] = useState<string>(q.minQuantity ?? "");
+  const [maxQuantity, setMaxQuantity] = useState<string>(q.maxQuantity ?? "");
   const [sort, setSort] = useState(q.sort || "time-desc");
   const [positionSide, setPositionSide] = useState(q.positionSide || "ALL");
 
   async function apply() {
     startTransition(async () => {
-      await setQ({ symbol, minPnl, maxPnl, sort, positionSide });
+      await setQ({
+        symbol,
+        minPnl,
+        maxPnl,
+        minQuantity,
+        maxQuantity,
+        sort,
+        positionSide,
+      });
       // 强制刷新服务端组件
       router.refresh();
     });
@@ -38,6 +50,8 @@ export function FilterBar({ defaultSymbol }: Props) {
     setSymbol(defaultSymbol);
     setMinPnl("");
     setMaxPnl("");
+    setMinQuantity("");
+    setMaxQuantity("");
     setSort("time-desc");
     setPositionSide("ALL");
     startTransition(async () => {
@@ -45,6 +59,8 @@ export function FilterBar({ defaultSymbol }: Props) {
         symbol: defaultSymbol,
         minPnl: "",
         maxPnl: "",
+        minQuantity: "",
+        maxQuantity: "",
         sort: "time-desc",
         positionSide: "ALL",
       });
@@ -83,6 +99,28 @@ export function FilterBar({ defaultSymbol }: Props) {
           onChange={(e) => setMaxPnl(e.target.value)}
           className="h-9 w-28 rounded border px-2 text-sm"
           placeholder="e.g. 500"
+          disabled={isPending}
+        />
+      </div>
+      <div className="flex flex-col">
+        <label className="text-xs text-muted-foreground">Min 成交量</label>
+        <input
+          inputMode="decimal"
+          value={minQuantity}
+          onChange={(e) => setMinQuantity(e.target.value)}
+          className="h-9 w-28 rounded border px-2 text-sm"
+          placeholder="e.g. 0.1"
+          disabled={isPending}
+        />
+      </div>
+      <div className="flex flex-col">
+        <label className="text-xs text-muted-foreground">Max 成交量</label>
+        <input
+          inputMode="decimal"
+          value={maxQuantity}
+          onChange={(e) => setMaxQuantity(e.target.value)}
+          className="h-9 w-28 rounded border px-2 text-sm"
+          placeholder="e.g. 10"
           disabled={isPending}
         />
       </div>

@@ -10,6 +10,8 @@ interface Props {
   symbol: string;
   minPnl?: number;
   maxPnl?: number;
+  minQuantity?: number;
+  maxQuantity?: number;
   sort?: string;
   positionSide?: "LONG" | "SHORT" | "ALL";
 }
@@ -97,11 +99,14 @@ export function RoundList({
   symbol,
   minPnl,
   maxPnl,
+  minQuantity,
+  maxQuantity,
   sort = "time-desc",
   positionSide = "ALL",
 }: Props) {
   const [rounds, setRounds] = useState<RoundPnlData[]>([]);
   const [total, setTotal] = useState(0);
+  const [totalPnl, setTotalPnl] = useState(0);
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
@@ -116,12 +121,15 @@ export function RoundList({
       const response = await cryptoApi.listRoundPnl<{
         data: RoundPnlData[];
         total: number;
+        totalPnl: number;
       }>({
         symbol,
         exchange: "binance",
         market: "futures",
         minPnl,
         maxPnl,
+        minQuantity,
+        maxQuantity,
         sort,
         limit: 20,
         offset,
@@ -131,9 +139,11 @@ export function RoundList({
       if (offset === 0) {
         // 首次加载或重新筛选
         setRounds(response.data);
+        setTotalPnl(response.totalPnl); // 设置总盈亏
       } else {
         // 追加加载
         setRounds((prev) => [...prev, ...response.data]);
+        // 追加加载时不更新总盈亏，因为总盈亏是全量数据的
       }
 
       setTotal(response.total);
@@ -144,11 +154,24 @@ export function RoundList({
     } finally {
       setLoading(false);
     }
-  }, [symbol, minPnl, maxPnl, sort, positionSide, offset, loading, hasMore]);
+  }, [
+    symbol,
+    minPnl,
+    maxPnl,
+    minQuantity,
+    maxQuantity,
+    sort,
+    positionSide,
+    offset,
+    loading,
+    hasMore,
+  ]);
 
   // 重置状态并重新加载（筛选条件变化时）
   const resetAndLoad = useCallback(async () => {
     setRounds([]);
+    setTotal(0);
+    setTotalPnl(0);
     setOffset(0);
     setHasMore(true);
 
@@ -160,12 +183,15 @@ export function RoundList({
       const response = await cryptoApi.listRoundPnl<{
         data: RoundPnlData[];
         total: number;
+        totalPnl: number;
       }>({
         symbol,
         exchange: "binance",
         market: "futures",
         minPnl,
         maxPnl,
+        minQuantity,
+        maxQuantity,
         sort,
         limit: 20,
         offset: 0, // 强制从 0 开始
@@ -174,6 +200,7 @@ export function RoundList({
 
       setRounds(response.data);
       setTotal(response.total);
+      setTotalPnl(response.totalPnl); // 设置总盈亏
       setOffset(response.data.length);
       setHasMore(response.data.length === 20);
     } catch (error) {
@@ -181,11 +208,20 @@ export function RoundList({
     } finally {
       setLoading(false);
     }
-  }, [symbol, minPnl, maxPnl, sort, positionSide, loading]);
+  }, [
+    symbol,
+    minPnl,
+    maxPnl,
+    minQuantity,
+    maxQuantity,
+    sort,
+    positionSide,
+    loading,
+  ]);
 
   useEffect(() => {
     resetAndLoad();
-  }, [symbol, minPnl, maxPnl, sort, positionSide]);
+  }, [symbol, minPnl, maxPnl, minQuantity, maxQuantity, sort, positionSide]);
 
   // 设置intersection observer
   useEffect(() => {
@@ -213,8 +249,26 @@ export function RoundList({
 
   return (
     <div className="space-y-4">
-      <div className="text-sm text-muted-foreground">
-        {total}条数据 | 已显示 {rounds.length}条
+      <div className="flex items-center justify-between">
+        <div className="text-sm text-muted-foreground">
+          {total}条数据 | 已显示 {rounds.length}条
+        </div>
+        {rounds.length > 0 && (
+          <div className="flex items-center gap-2">
+            <span className="text-sm font-medium">总盈亏:</span>
+            <span
+              className={`px-3 py-1 rounded text-base font-semibold ${
+                totalPnl > 0
+                  ? "bg-green-600/20 text-green-600"
+                  : totalPnl < 0
+                  ? "bg-red-600/20 text-red-600"
+                  : "bg-muted text-foreground"
+              }`}
+            >
+              {totalPnl.toFixed(4)}
+            </span>
+          </div>
+        )}
       </div>
 
       <div className="grid gap-4">

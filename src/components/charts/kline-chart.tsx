@@ -40,6 +40,8 @@ interface KlineChartProps {
   // 外部触发聚焦信号：每次值变化会触发一次聚焦到开/平仓时间段
   focusRangeSignal?: number;
   // 新增：开仓平仓详细信息，用于标注
+  // 控制标记类型：true为只显示时间，false为显示价格和时间
+  useTimeMarkersOnly?: boolean;
   totalQuantity?: number;
   totalFees?: number;
   realizedPnl?: number;
@@ -109,6 +111,7 @@ export function KlineChart({
   entryTime,
   exitTime,
   focusRangeSignal = 0,
+  useTimeMarkersOnly = false,
   totalQuantity,
   totalFees,
   realizedPnl,
@@ -480,20 +483,41 @@ export function KlineChart({
                 positionSide
               );
             }, 100);
-          } else if (entryTime && exitTime && entryPrice && exitPrice) {
-            // 如果没有原始交易数据，使用平均价格（向后兼容）
+          } else if (entryTime && exitTime) {
+            // 根据useTimeMarkersOnly决定使用哪种标记
             setTimeout(() => {
-              addAverageTradeMarkers(
-                series,
-                entryTime,
-                exitTime,
-                entryPrice,
-                exitPrice,
-                markersRef,
-                totalQuantity,
-                totalFees,
-                realizedPnl
-              );
+              if (useTimeMarkersOnly) {
+                addTimeMarkers(
+                  series,
+                  entryTime,
+                  exitTime,
+                  markersRef,
+                  positionSide
+                );
+              } else if (entryPrice && exitPrice) {
+                // 如果没有原始交易数据，使用平均价格（向后兼容）
+                addAverageTradeMarkers(
+                  series,
+                  entryTime,
+                  exitTime,
+                  entryPrice,
+                  exitPrice,
+                  markersRef,
+                  totalQuantity,
+                  totalFees,
+                  realizedPnl,
+                  positionSide
+                );
+              } else {
+                // 只有时间信息时，添加时间标记
+                addTimeMarkers(
+                  series,
+                  entryTime,
+                  exitTime,
+                  markersRef,
+                  positionSide
+                );
+              }
             }, 100);
           }
         } catch {}
@@ -614,20 +638,41 @@ export function KlineChart({
             positionSide
           );
         }, 100);
-      } else if (entryTime && exitTime && entryPrice && exitPrice) {
-        // 如果没有原始交易数据，使用平均价格（向后兼容）
+      } else if (entryTime && exitTime) {
+        // 根据useTimeMarkersOnly决定使用哪种标记
         setTimeout(() => {
-          addAverageTradeMarkers(
-            series,
-            entryTime,
-            exitTime,
-            entryPrice,
-            exitPrice,
-            markersRef,
-            totalQuantity,
-            totalFees,
-            realizedPnl
-          );
+          if (useTimeMarkersOnly) {
+            addTimeMarkers(
+              series,
+              entryTime,
+              exitTime,
+              markersRef,
+              positionSide
+            );
+          } else if (entryPrice && exitPrice) {
+            // 如果没有原始交易数据，使用平均价格（向后兼容）
+            addAverageTradeMarkers(
+              series,
+              entryTime,
+              exitTime,
+              entryPrice,
+              exitPrice,
+              markersRef,
+              totalQuantity,
+              totalFees,
+              realizedPnl,
+              positionSide
+            );
+          } else {
+            // 只有时间信息时，添加时间标记
+            addTimeMarkers(
+              series,
+              entryTime,
+              exitTime,
+              markersRef,
+              positionSide
+            );
+          }
         }, 100);
       }
 
@@ -1025,12 +1070,17 @@ function addOriginalTradeMarkers(
       if (candle) {
         const tradeCountText =
           order.tradeCount > 1 ? ` (${order.tradeCount}笔)` : "";
+        const directionText = positionSide
+          ? `${positionSide === "LONG" ? "多单" : "空单"} `
+          : "";
         markers.push({
           time: candle.time,
           position: "belowBar",
           color: "#16a34a",
           shape: "arrowUp",
-          text: `开仓${index + 1}${tradeCountText} ${order.price.toFixed(
+          text: `${directionText}开仓${
+            index + 1
+          }${tradeCountText} ${order.price.toFixed(
             4
           )} | 数量: ${order.quantity.toFixed(
             4
@@ -1050,12 +1100,17 @@ function addOriginalTradeMarkers(
       if (candle) {
         const tradeCountText =
           order.tradeCount > 1 ? ` (${order.tradeCount}笔)` : "";
+        const directionText = positionSide
+          ? `${positionSide === "LONG" ? "多单" : "空单"} `
+          : "";
         markers.push({
           time: candle.time,
           position: "aboveBar",
           color: "#ef4444",
           shape: "arrowDown",
-          text: `平仓${index + 1}${tradeCountText} ${order.price.toFixed(
+          text: `${directionText}平仓${
+            index + 1
+          }${tradeCountText} ${order.price.toFixed(
             4
           )} | 数量: ${order.quantity.toFixed(
             4
@@ -1089,7 +1144,8 @@ function addAverageTradeMarkers(
   markersRef: React.MutableRefObject<any>,
   totalQuantity?: number,
   totalFees?: number,
-  realizedPnl?: number
+  realizedPnl?: number,
+  positionSide?: "LONG" | "SHORT"
 ) {
   try {
     const entryTimeSeconds = Math.floor(new Date(entryTime).getTime() / 1000);
@@ -1107,12 +1163,15 @@ function addAverageTradeMarkers(
     // 找到最接近开仓时间的K线
     const entryCandle = findClosestCandle([...currentData], entryTimeSeconds);
     if (entryCandle) {
+      const directionText = positionSide
+        ? `${positionSide === "LONG" ? "多单" : "空单"} `
+        : "";
       markers.push({
         time: entryCandle.time,
         position: "belowBar",
         color: "#16a34a",
         shape: "arrowUp",
-        text: `开仓 ${entryPrice.toFixed(4)}${
+        text: `${directionText}开仓 ${entryPrice.toFixed(4)}${
           totalQuantity ? ` | 数量: ${totalQuantity.toFixed(4)}` : ""
         }`,
       });
@@ -1129,12 +1188,17 @@ function addAverageTradeMarkers(
       const feesText =
         totalFees !== undefined ? ` | 手续费: ${totalFees.toFixed(4)}` : "";
 
+      const directionText = positionSide
+        ? `${positionSide === "LONG" ? "多单" : "空单"} `
+        : "";
       markers.push({
         time: exitCandle.time,
         position: "aboveBar",
         color: pnlColor,
         shape: "arrowDown",
-        text: `平仓 ${exitPrice.toFixed(4)}${pnlText}${feesText}`,
+        text: `${directionText}平仓 ${exitPrice.toFixed(
+          4
+        )}${pnlText}${feesText}`,
       });
     }
 
@@ -1148,6 +1212,74 @@ function addAverageTradeMarkers(
     }
   } catch (error) {
     console.error("添加平均交易标记失败:", error);
+  }
+}
+
+// 添加时间标记（仅时间，不显示价格）
+function addTimeMarkers(
+  series: any, // ISeriesApi
+  entryTime: string,
+  exitTime: string,
+  markersRef: React.MutableRefObject<any>,
+  positionSide?: "LONG" | "SHORT"
+) {
+  try {
+    const entryTimeSeconds = Math.floor(new Date(entryTime).getTime() / 1000);
+    const exitTimeSeconds = Math.floor(new Date(exitTime).getTime() / 1000);
+
+    // 获取当前数据，找到最接近开仓和平仓时间的K线
+    const currentData = (series as any).data();
+    if (!currentData || currentData.length === 0) {
+      console.warn("没有K线数据，无法添加时间标记");
+      return;
+    }
+
+    const markers: any[] = [];
+
+    // 找到最接近开仓时间的K线
+    const entryCandle = findClosestCandle([...currentData], entryTimeSeconds);
+    if (entryCandle) {
+      const directionText = positionSide
+        ? `${positionSide === "LONG" ? "多单" : "空单"} `
+        : "";
+      markers.push({
+        time: entryCandle.time,
+        position: "belowBar",
+        color: "#2563eb",
+        shape: "arrowUp",
+        text: `${directionText}开单时间: ${new Date(
+          entryTime
+        ).toLocaleString()}`,
+      });
+    }
+
+    // 找到最接近平仓时间的K线
+    const exitCandle = findClosestCandle([...currentData], exitTimeSeconds);
+    if (exitCandle) {
+      const directionText = positionSide
+        ? `${positionSide === "LONG" ? "多单" : "空单"} `
+        : "";
+      markers.push({
+        time: exitCandle.time,
+        position: "aboveBar",
+        color: "#dc2626",
+        shape: "arrowDown",
+        text: `${directionText}关单时间: ${new Date(
+          exitTime
+        ).toLocaleString()}`,
+      });
+    }
+
+    console.log("Setting time markers:", markers); // 调试日志
+
+    // 使用v5的新API
+    if (markersRef.current) {
+      markersRef.current.setMarkers(markers);
+    } else {
+      markersRef.current = createSeriesMarkers(series, markers);
+    }
+  } catch (error) {
+    console.error("添加时间标记失败:", error);
   }
 }
 
