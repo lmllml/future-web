@@ -11,6 +11,7 @@ interface Props {
   minPnl?: number;
   maxPnl?: number;
   sort?: string;
+  positionSide?: "LONG" | "SHORT" | "ALL";
 }
 
 function PnlBadge({ v }: { v: number }) {
@@ -26,6 +27,21 @@ function PnlBadge({ v }: { v: number }) {
       }`}
     >
       {v.toFixed(4)}
+    </span>
+  );
+}
+
+function PositionSideBadge({ side }: { side: "LONG" | "SHORT" }) {
+  const isLong = side === "LONG";
+  return (
+    <span
+      className={`px-2 py-0.5 rounded text-xs font-medium ${
+        isLong
+          ? "bg-blue-600/15 text-blue-600"
+          : "bg-orange-600/15 text-orange-600"
+      }`}
+    >
+      {isLong ? "多单" : "空单"}
     </span>
   );
 }
@@ -46,6 +62,7 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
           <span className="text-xs bg-muted px-2 py-1 rounded font-mono">
             #{index + 1}
           </span>
+          <PositionSideBadge side={r.positionSide} />
           <span className="text-sm text-muted-foreground">
             {new Date(r.openTime).toLocaleString()} →{" "}
             {new Date(r.closeTime).toLocaleString()}
@@ -81,6 +98,7 @@ export function RoundList({
   minPnl,
   maxPnl,
   sort = "time-desc",
+  positionSide = "ALL",
 }: Props) {
   const [rounds, setRounds] = useState<RoundPnlData[]>([]);
   const [total, setTotal] = useState(0);
@@ -107,6 +125,7 @@ export function RoundList({
         sort,
         limit: 20,
         offset,
+        positionSide: positionSide === "ALL" ? undefined : positionSide,
       });
 
       if (offset === 0) {
@@ -125,7 +144,7 @@ export function RoundList({
     } finally {
       setLoading(false);
     }
-  }, [symbol, minPnl, maxPnl, sort, offset, loading, hasMore]);
+  }, [symbol, minPnl, maxPnl, sort, positionSide, offset, loading, hasMore]);
 
   // 重置状态并重新加载（筛选条件变化时）
   const resetAndLoad = useCallback(async () => {
@@ -150,6 +169,7 @@ export function RoundList({
         sort,
         limit: 20,
         offset: 0, // 强制从 0 开始
+        positionSide: positionSide === "ALL" ? undefined : positionSide,
       });
 
       setRounds(response.data);
@@ -161,11 +181,11 @@ export function RoundList({
     } finally {
       setLoading(false);
     }
-  }, [symbol, minPnl, maxPnl, sort, loading]);
+  }, [symbol, minPnl, maxPnl, sort, positionSide, loading]);
 
   useEffect(() => {
     resetAndLoad();
-  }, [symbol, minPnl, maxPnl, sort]);
+  }, [symbol, minPnl, maxPnl, sort, positionSide]);
 
   // 设置intersection observer
   useEffect(() => {

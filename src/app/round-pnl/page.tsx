@@ -9,6 +9,7 @@ export default function RoundPnlPage({
     minPnl?: string;
     maxPnl?: string;
     sort?: string;
+    positionSide?: string;
   };
 }) {
   const symbol = searchParams.symbol || "ETHUSDC";
@@ -20,6 +21,11 @@ export default function RoundPnlPage({
     typeof searchParams.sort === "string" && searchParams.sort
       ? searchParams.sort
       : "time-desc";
+  const positionSide =
+    searchParams.positionSide === "LONG" ||
+    searchParams.positionSide === "SHORT"
+      ? searchParams.positionSide
+      : "ALL";
 
   return (
     <div className="space-y-6">
@@ -27,7 +33,13 @@ export default function RoundPnlPage({
         <h2 className="text-xl font-semibold">回合级盈亏（{symbol}）</h2>
       </div>
       <FilterBar defaultSymbol={symbol} />
-      <RoundList symbol={symbol} minPnl={minPnl} maxPnl={maxPnl} sort={sort} />
+      <RoundList
+        symbol={symbol}
+        minPnl={minPnl}
+        maxPnl={maxPnl}
+        sort={sort}
+        positionSide={positionSide}
+      />
     </div>
   );
 }

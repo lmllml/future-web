@@ -17,16 +17,18 @@ export function FilterBar({ defaultSymbol }: Props) {
     minPnl: parseAsString.withDefault(""),
     maxPnl: parseAsString.withDefault(""),
     sort: parseAsString.withDefault("time-desc"),
+    positionSide: parseAsString.withDefault("ALL"),
   });
 
   const [symbol, setSymbol] = useState(q.symbol || defaultSymbol);
   const [minPnl, setMinPnl] = useState<string>(q.minPnl ?? "");
   const [maxPnl, setMaxPnl] = useState<string>(q.maxPnl ?? "");
   const [sort, setSort] = useState(q.sort || "time-desc");
+  const [positionSide, setPositionSide] = useState(q.positionSide || "ALL");
 
   async function apply() {
     startTransition(async () => {
-      await setQ({ symbol, minPnl, maxPnl, sort });
+      await setQ({ symbol, minPnl, maxPnl, sort, positionSide });
       // 强制刷新服务端组件
       router.refresh();
     });
@@ -37,12 +39,14 @@ export function FilterBar({ defaultSymbol }: Props) {
     setMinPnl("");
     setMaxPnl("");
     setSort("time-desc");
+    setPositionSide("ALL");
     startTransition(async () => {
       await setQ({
         symbol: defaultSymbol,
         minPnl: "",
         maxPnl: "",
         sort: "time-desc",
+        positionSide: "ALL",
       });
       router.refresh();
     });
@@ -81,6 +85,19 @@ export function FilterBar({ defaultSymbol }: Props) {
           placeholder="e.g. 500"
           disabled={isPending}
         />
+      </div>
+      <div className="flex flex-col">
+        <label className="text-xs text-muted-foreground">方向</label>
+        <select
+          value={positionSide}
+          onChange={(e) => setPositionSide(e.target.value)}
+          className="h-9 w-24 rounded border px-2 text-sm"
+          disabled={isPending}
+        >
+          <option value="ALL">全部</option>
+          <option value="LONG">多单</option>
+          <option value="SHORT">空单</option>
+        </select>
       </div>
       <div className="flex flex-col">
         <label className="text-xs text-muted-foreground">Sort</label>
