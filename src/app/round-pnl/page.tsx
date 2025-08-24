@@ -1,5 +1,8 @@
+"use client";
+
 import { FilterBar } from "./filter-bar";
 import { RoundList } from "./round-list";
+import { AnalysisSidebar } from "./analysis-sidebar";
 
 export default function RoundPnlPage({
   searchParams,
@@ -37,15 +40,30 @@ export default function RoundPnlPage({
         <h2 className="text-xl font-semibold">回合级盈亏（{symbol}）</h2>
       </div>
       <FilterBar defaultSymbol={symbol} />
-      <RoundList
-        symbol={symbol}
-        minPnl={minPnl}
-        maxPnl={maxPnl}
-        minQuantity={minQuantity}
-        maxQuantity={maxQuantity}
-        sort={sort}
-        positionSide={positionSide}
-      />
+      <div className="flex gap-6">
+        {/* 主内容区域 */}
+        <div className="flex-1">
+          <RoundList
+            symbol={symbol}
+            minPnl={minPnl}
+            maxPnl={maxPnl}
+            minQuantity={minQuantity}
+            maxQuantity={maxQuantity}
+            sort={sort}
+            positionSide={positionSide}
+          />
+        </div>
+
+        {/* 分析侧边栏 */}
+        <AnalysisSidebar
+          symbol={symbol}
+          minPnl={minPnl}
+          maxPnl={maxPnl}
+          minQuantity={minQuantity}
+          maxQuantity={maxQuantity}
+          positionSide={positionSide}
+        />
+      </div>
     </div>
   );
 }
