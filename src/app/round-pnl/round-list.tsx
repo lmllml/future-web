@@ -33,23 +33,30 @@ function PnlBadge({ v }: { v: number }) {
   );
 }
 
-function RatioBadge({ 
-  realizedPnl, 
-  quantity, 
-  avgEntryPrice 
-}: { 
-  realizedPnl: number; 
-  quantity: number; 
-  avgEntryPrice: number; 
+function RatioBadge({
+  realizedPnl,
+  quantity,
+  avgEntryPrice,
+  leverage = 1,
+}: {
+  realizedPnl: number;
+  quantity: number;
+  avgEntryPrice: number;
+  leverage?: number;
 }) {
   const openAmount = quantity * avgEntryPrice; // 开单金额
-  const ratioPercent = openAmount > 0 ? (realizedPnl / openAmount) * 100 : 0;
+  const margin = openAmount / leverage; // 实际保证金 = 开单金额 / 杠杆倍数
+  const ratioPercent = margin > 0 ? (realizedPnl / margin) * 100 : 0;
   const positive = ratioPercent > 0;
-  const formatted = Number.isFinite(ratioPercent) ? ratioPercent.toFixed(2) : "0.00";
-  
+  const formatted = Number.isFinite(ratioPercent)
+    ? ratioPercent.toFixed(2)
+    : "0.00";
+
   return (
     <span
-      title="盈亏比例 (盈亏/开单金额)"
+      title={`盈亏比例 (盈亏/保证金) | 杠杆: ${leverage}x | 保证金: ${margin.toFixed(
+        2
+      )}`}
       className={`px-2 py-0.5 rounded text-xs ${
         positive
           ? "bg-green-600/10 text-green-700"
@@ -108,10 +115,11 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
       </div>
 
       <div className="mt-3 flex justify-between items-center">
-        <RatioBadge 
-          realizedPnl={r.realizedPnl} 
-          quantity={r.totalQuantity} 
-          avgEntryPrice={r.avgEntryPrice} 
+        <RatioBadge
+          realizedPnl={r.realizedPnl}
+          quantity={r.totalQuantity}
+          avgEntryPrice={r.avgEntryPrice}
+          leverage={r.leverage || 5} // 默认使用 5 倍杠杆，如果数据中没有杠杆信息
         />
         <KlineDialog round={r} />
       </div>

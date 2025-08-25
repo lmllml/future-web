@@ -16,6 +16,7 @@ export interface RoundPnlData {
   avgExitPrice: number;
   realizedPnl: number;
   totalFees: number;
+  leverage?: number; // 杠杆倍数（期货专用）
   calculatedAt: string;
 }
 
