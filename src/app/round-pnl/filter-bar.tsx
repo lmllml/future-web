@@ -149,6 +149,8 @@ export function FilterBar({ defaultSymbol }: Props) {
           <option value="time-asc">Time ↑</option>
           <option value="pnl-desc">PnL ↓</option>
           <option value="pnl-asc">PnL ↑</option>
+          <option value="ratio-desc">盈亏率 ↓</option>
+          <option value="ratio-asc">盈亏率 ↑</option>
         </select>
       </div>
       <div className="flex gap-2">
