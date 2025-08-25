@@ -33,6 +33,36 @@ function PnlBadge({ v }: { v: number }) {
   );
 }
 
+function RatioBadge({ 
+  realizedPnl, 
+  quantity, 
+  avgEntryPrice 
+}: { 
+  realizedPnl: number; 
+  quantity: number; 
+  avgEntryPrice: number; 
+}) {
+  const openAmount = quantity * avgEntryPrice; // 开单金额
+  const ratioPercent = openAmount > 0 ? (realizedPnl / openAmount) * 100 : 0;
+  const positive = ratioPercent > 0;
+  const formatted = Number.isFinite(ratioPercent) ? ratioPercent.toFixed(2) : "0.00";
+  
+  return (
+    <span
+      title="盈亏比例 (盈亏/开单金额)"
+      className={`px-2 py-0.5 rounded text-xs ${
+        positive
+          ? "bg-green-600/10 text-green-700"
+          : ratioPercent < 0
+          ? "bg-red-600/10 text-red-700"
+          : "bg-muted text-foreground"
+      }`}
+    >
+      {formatted}%
+    </span>
+  );
+}
+
 function PositionSideBadge({ side }: { side: "LONG" | "SHORT" }) {
   const isLong = side === "LONG";
   return (
@@ -77,7 +107,12 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
         </div>
       </div>
 
-      <div className="mt-3 flex justify-end">
+      <div className="mt-3 flex justify-between items-center">
+        <RatioBadge 
+          realizedPnl={r.realizedPnl} 
+          quantity={r.totalQuantity} 
+          avgEntryPrice={r.avgEntryPrice} 
+        />
         <KlineDialog round={r} />
       </div>
 
