@@ -81,16 +81,7 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
         <KlineDialog round={r} />
       </div>
 
-      <div className="mt-2 text-xs text-muted-foreground flex flex-wrap gap-2">
-        <span>openOrders:</span>
-        <span className="truncate max-w-[65%]">
-          {(r.openOrderIds || []).join(", ")}
-        </span>
-        <span>| closeOrders:</span>
-        <span className="truncate max-w-[65%]">
-          {(r.closeOrderIds || []).join(", ")}
-        </span>
-      </div>
+      {/* 订单ID信息不再展示 */}
     </div>
   );
 }
