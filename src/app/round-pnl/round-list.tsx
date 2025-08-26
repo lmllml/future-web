@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cryptoApi } from "@/lib/api";
 import { RoundPnlData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
@@ -148,6 +148,27 @@ export function RoundList({
   const [loading, setLoading] = useState(false);
   const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
+
+  // 计算平均盈亏率：每笔盈亏率之和 / 笔数（按保证金口径，和行内 RatioBadge 一致）
+  const avgPnlRatio = useMemo(() => {
+    if (rounds.length === 0) return 0;
+
+    let pnlRatioSum = 0; // 盈亏率总和
+    let tradeCount = 0; // 有效交易笔数
+
+    rounds.forEach((round) => {
+      const leverage = round.leverage ?? 5; // 与 RatioBadge 保持一致
+      const openAmount = round.totalQuantity * round.avgEntryPrice; // 开单金额
+      const margin = leverage > 0 ? openAmount / leverage : 0; // 保证金
+      if (margin > 0) {
+        const singlePnlRatio = (round.realizedPnl / margin) * 100;
+        pnlRatioSum += singlePnlRatio;
+        tradeCount++;
+      }
+    });
+
+    return tradeCount > 0 ? pnlRatioSum / tradeCount : 0;
+  }, [rounds]);
   const observerRef = useRef<IntersectionObserver>();
   const lastElementRef = useRef<HTMLDivElement>(null);
 
@@ -310,19 +331,35 @@ export function RoundList({
           {total}条数据 | 已显示 {rounds.length}条
         </div>
         {rounds.length > 0 && (
-          <div className="flex items-center gap-2">
-            <span className="text-sm font-medium">总盈亏:</span>
-            <span
-              className={`px-3 py-1 rounded text-base font-semibold ${
-                totalPnl > 0
-                  ? "bg-green-600/20 text-green-600"
-                  : totalPnl < 0
-                  ? "bg-red-600/20 text-red-600"
-                  : "bg-muted text-foreground"
-              }`}
-            >
-              {totalPnl.toFixed(4)}
-            </span>
+          <div className="flex items-center gap-4">
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">总盈亏:</span>
+              <span
+                className={`px-3 py-1 rounded text-base font-semibold ${
+                  totalPnl > 0
+                    ? "bg-green-600/20 text-green-600"
+                    : totalPnl < 0
+                    ? "bg-red-600/20 text-red-600"
+                    : "bg-muted text-foreground"
+                }`}
+              >
+                {totalPnl.toFixed(4)}
+              </span>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-sm font-medium">平均盈亏率:</span>
+              <span
+                className={`px-3 py-1 rounded text-base font-semibold ${
+                  avgPnlRatio > 0
+                    ? "bg-green-600/20 text-green-600"
+                    : avgPnlRatio < 0
+                    ? "bg-red-600/20 text-red-600"
+                    : "bg-muted text-foreground"
+                }`}
+              >
+                {avgPnlRatio.toFixed(2)}%
+              </span>
+            </div>
           </div>
         )}
       </div>
