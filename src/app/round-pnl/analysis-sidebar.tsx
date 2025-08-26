@@ -14,6 +14,8 @@ interface Props {
   minQuantity?: number;
   maxQuantity?: number;
   positionSide?: "LONG" | "SHORT" | "ALL";
+  startTime?: string;
+  endTime?: string;
 }
 
 export function AnalysisSidebar({
@@ -24,6 +26,8 @@ export function AnalysisSidebar({
   minQuantity,
   maxQuantity,
   positionSide,
+  startTime,
+  endTime,
 }: Props) {
   const [showCumulativePnl, setShowCumulativePnl] = useState(false);
 
@@ -85,6 +89,8 @@ export function AnalysisSidebar({
         minQuantity={minQuantity}
         maxQuantity={maxQuantity}
         positionSide={positionSide}
+        startTime={startTime}
+        endTime={endTime}
       />
     </div>
   );

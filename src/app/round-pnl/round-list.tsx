@@ -14,6 +14,8 @@ interface Props {
   maxQuantity?: number;
   sort?: string;
   positionSide?: "LONG" | "SHORT" | "ALL";
+  startTime?: string;
+  endTime?: string;
 }
 
 function PnlBadge({ v }: { v: number }) {
@@ -137,6 +139,8 @@ export function RoundList({
   maxQuantity,
   sort = "time-desc",
   positionSide = "ALL",
+  startTime,
+  endTime,
 }: Props) {
   const [rounds, setRounds] = useState<RoundPnlData[]>([]);
   const [total, setTotal] = useState(0);
@@ -168,6 +172,8 @@ export function RoundList({
         limit: 20,
         offset,
         positionSide: positionSide === "ALL" ? undefined : positionSide,
+        startTime,
+        endTime,
       });
 
       if (offset === 0) {
@@ -196,6 +202,8 @@ export function RoundList({
     maxQuantity,
     sort,
     positionSide,
+    startTime,
+    endTime,
     offset,
     loading,
     hasMore,
@@ -230,6 +238,8 @@ export function RoundList({
         limit: 20,
         offset: 0, // 强制从 0 开始
         positionSide: positionSide === "ALL" ? undefined : positionSide,
+        startTime,
+        endTime,
       });
 
       setRounds(response.data);
@@ -250,12 +260,24 @@ export function RoundList({
     maxQuantity,
     sort,
     positionSide,
+    startTime,
+    endTime,
     loading,
   ]);
 
   useEffect(() => {
     resetAndLoad();
-  }, [symbol, minPnl, maxPnl, minQuantity, maxQuantity, sort, positionSide]);
+  }, [
+    symbol,
+    minPnl,
+    maxPnl,
+    minQuantity,
+    maxQuantity,
+    sort,
+    positionSide,
+    startTime,
+    endTime,
+  ]);
 
   // 设置intersection observer
   useEffect(() => {

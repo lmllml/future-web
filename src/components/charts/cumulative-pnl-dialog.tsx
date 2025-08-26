@@ -21,6 +21,8 @@ interface Props {
   minQuantity?: number;
   maxQuantity?: number;
   positionSide?: "LONG" | "SHORT" | "ALL";
+  startTime?: string;
+  endTime?: string;
 }
 
 interface CumulativePnlData {
@@ -41,6 +43,8 @@ export function CumulativePnlDialog({
   minQuantity,
   maxQuantity,
   positionSide,
+  startTime,
+  endTime,
 }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(false);
   const [chartData, setChartData] = useState<CumulativePnlData[]>([]);
@@ -64,6 +68,8 @@ export function CumulativePnlDialog({
           maxPnl,
           minQuantity,
           maxQuantity,
+          startTime,
+          endTime,
         });
         setChartData(response.data);
       } catch (error) {
@@ -75,7 +81,17 @@ export function CumulativePnlDialog({
     };
 
     fetchCumulativePnl();
-  }, [open, symbol, minPnl, maxPnl, minQuantity, maxQuantity, positionSide]);
+  }, [
+    open,
+    symbol,
+    minPnl,
+    maxPnl,
+    minQuantity,
+    maxQuantity,
+    positionSide,
+    startTime,
+    endTime,
+  ]);
 
   // 统计信息：基于API返回的图表数据计算
   const stats = useMemo(() => {

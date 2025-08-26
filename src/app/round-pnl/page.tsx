@@ -15,6 +15,8 @@ export default function RoundPnlPage({
     maxQuantity?: string;
     sort?: string;
     positionSide?: string;
+    startTime?: string;
+    endTime?: string;
   };
 }) {
   const symbol = searchParams.symbol || "ETHUSDC";
@@ -34,6 +36,15 @@ export default function RoundPnlPage({
       ? searchParams.positionSide
       : "ALL";
 
+  const startTime =
+    searchParams.startTime && searchParams.startTime !== ""
+      ? searchParams.startTime
+      : undefined;
+  const endTime =
+    searchParams.endTime && searchParams.endTime !== ""
+      ? searchParams.endTime
+      : undefined;
+
   return (
     <div className="space-y-6">
       <div className="flex items-center justify-between">
@@ -51,6 +62,8 @@ export default function RoundPnlPage({
             maxQuantity={maxQuantity}
             sort={sort}
             positionSide={positionSide}
+            startTime={startTime}
+            endTime={endTime}
           />
         </div>
 
@@ -62,6 +75,8 @@ export default function RoundPnlPage({
           minQuantity={minQuantity}
           maxQuantity={maxQuantity}
           positionSide={positionSide}
+          startTime={startTime}
+          endTime={endTime}
         />
       </div>
     </div>
