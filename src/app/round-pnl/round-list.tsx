@@ -96,6 +96,23 @@ interface RoundCardProps {
 }
 
 function RoundCard({ r, index, symbol }: RoundCardProps) {
+  // 计算持仓时间
+  const openTime = new Date(r.openTime);
+  const closeTime = new Date(r.closeTime);
+  const durationMs = closeTime.getTime() - openTime.getTime();
+
+  // 格式化持仓时长
+  const formatDuration = (ms: number): string => {
+    const hours = Math.floor(ms / (1000 * 60 * 60));
+    const minutes = Math.floor((ms % (1000 * 60 * 60)) / (1000 * 60));
+
+    if (hours > 0) {
+      return `${hours}h${minutes}m`;
+    } else {
+      return `${minutes}m`;
+    }
+  };
+
   return (
     <div className="rounded border p-3 bg-card/40">
       <div className="flex items-center justify-between">
@@ -105,8 +122,7 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
           </span>
           <PositionSideBadge side={r.positionSide} />
           <span className="text-sm text-muted-foreground">
-            {new Date(r.openTime).toLocaleString()} →{" "}
-            {new Date(r.closeTime).toLocaleString()}
+            {openTime.toLocaleString()} → {closeTime.toLocaleString()}
           </span>
           <PnlBadge v={r.realizedPnl} />
         </div>
@@ -117,12 +133,17 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
       </div>
 
       <div className="mt-3 flex justify-between items-center">
-        <RatioBadge
-          realizedPnl={r.realizedPnl}
-          quantity={r.totalQuantity}
-          avgEntryPrice={r.avgEntryPrice}
-          leverage={r.leverage || 5} // 默认使用 5 倍杠杆，如果数据中没有杠杆信息
-        />
+        <div className="flex items-center gap-2">
+          <RatioBadge
+            realizedPnl={r.realizedPnl}
+            quantity={r.totalQuantity}
+            avgEntryPrice={r.avgEntryPrice}
+            leverage={r.leverage || 5} // 默认使用 5 倍杠杆，如果数据中没有杠杆信息
+          />
+          <span className="text-xs bg-blue-600/10 text-blue-700 px-2 py-0.5 rounded">
+            {formatDuration(durationMs)}
+          </span>
+        </div>
         <KlineDialog round={r} />
       </div>
 
