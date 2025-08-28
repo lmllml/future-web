@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cryptoApi } from "@/lib/api";
-import { RoundPnlData } from "@/lib/types";
+import { RoundPnlData, KlineData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { KlineDialog } from "@/components/charts/kline-dialog";
 
@@ -22,15 +22,15 @@ function PnlBadge({ v }: { v: number }) {
   const positive = v > 0;
   return (
     <span
-      className={`px-2 py-0.5 rounded text-sm ${
+      className={`inline-flex items-center px-3 py-1.5 rounded-md text-sm font-semibold h-8 ${
         positive
-          ? "bg-green-600/15 text-green-600"
+          ? "bg-green-600/20 text-green-700"
           : v < 0
-          ? "bg-red-600/15 text-red-600"
+          ? "bg-red-600/20 text-red-700"
           : "bg-muted text-foreground"
       }`}
     >
-      {v.toFixed(4)}
+      盈利: {v.toFixed(4)}
     </span>
   );
 }
@@ -59,15 +59,15 @@ function RatioBadge({
       title={`盈亏比例 (盈亏/保证金) | 杠杆: ${leverage}x | 保证金: ${margin.toFixed(
         2
       )}`}
-      className={`px-2 py-0.5 rounded text-xs ${
+      className={`inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium h-8 ${
         positive
-          ? "bg-green-600/10 text-green-700"
+          ? "bg-green-600/15 text-green-700"
           : ratioPercent < 0
-          ? "bg-red-600/10 text-red-700"
+          ? "bg-red-600/15 text-red-700"
           : "bg-muted text-foreground"
       }`}
     >
-      {formatted}%
+      盈亏率: {formatted}%
     </span>
   );
 }
@@ -76,13 +76,91 @@ function PositionSideBadge({ side }: { side: "LONG" | "SHORT" }) {
   const isLong = side === "LONG";
   return (
     <span
-      className={`px-2 py-0.5 rounded text-xs font-medium ${
+      className={`px-2.5 py-0.5 rounded-md text-sm font-semibold ${
         isLong
-          ? "bg-blue-600/15 text-blue-600"
-          : "bg-orange-600/15 text-orange-600"
+          ? "bg-blue-600/20 text-blue-700"
+          : "bg-orange-600/20 text-orange-700"
       }`}
     >
       {isLong ? "多单" : "空单"}
+    </span>
+  );
+}
+
+// 最大浮亏组件
+function MaxDrawdownBadge({ round }: { round: RoundPnlData }) {
+  const [maxDrawdown, setMaxDrawdown] = useState<number | null>(null);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    const calculateMaxDrawdown = async () => {
+      setLoading(true);
+      try {
+        // 获取交易期间的K线数据（使用1分钟K线获得更精确的价格数据）
+        const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+          symbol: round.symbol,
+          exchange: round.exchange || "binance",
+          market: "futures",
+          interval: "1m",
+          startTime: round.openTime,
+          endTime: round.closeTime,
+          order: "asc",
+        });
+
+        if (!data || data.length === 0) {
+          setMaxDrawdown(null);
+          return;
+        }
+
+        let worstPrice: number;
+        if (round.positionSide === "LONG") {
+          // 多单：找最低价
+          worstPrice = Math.min(...data.map((k) => k.low));
+          // 最大损失 = (开仓价 - 最低价) * 数量
+          const drawdown =
+            (round.avgEntryPrice - worstPrice) * round.totalQuantity;
+          setMaxDrawdown(Math.max(0, drawdown)); // 确保不为负数
+        } else {
+          // 空单：找最高价
+          worstPrice = Math.max(...data.map((k) => k.high));
+          // 最大损失 = (最高价 - 开仓价) * 数量
+          const drawdown =
+            (worstPrice - round.avgEntryPrice) * round.totalQuantity;
+          setMaxDrawdown(Math.max(0, drawdown)); // 确保不为负数
+        }
+      } catch (error) {
+        console.error("计算最大浮亏失败:", error);
+        setMaxDrawdown(null);
+      } finally {
+        setLoading(false);
+      }
+    };
+
+    calculateMaxDrawdown();
+  }, [round]);
+
+  if (loading) {
+    return (
+      <span className="inline-flex items-center px-3 py-1.5 rounded-md text-sm bg-gray-100 text-gray-500 animate-pulse h-8">
+        计算中...
+      </span>
+    );
+  }
+
+  if (maxDrawdown === null) {
+    return (
+      <span className="inline-flex items-center px-3 py-1.5 rounded-md text-sm bg-gray-100 text-gray-500 h-8">
+        无数据
+      </span>
+    );
+  }
+
+  return (
+    <span
+      className="inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-red-600/15 text-red-700 h-8"
+      title={`交易期间遭受的最大未实现亏损（最大浮亏）`}
+    >
+      最大浮亏: {maxDrawdown.toFixed(4)}
     </span>
   );
 }
@@ -130,56 +208,69 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
   const openAmount = (r.totalQuantity * r.avgEntryPrice) / leverage;
 
   return (
-    <div className="rounded border p-3 bg-card/40">
+    <div className="rounded-lg border border-slate-200 p-4 bg-white/80 backdrop-blur-sm shadow-sm hover:shadow-md transition-shadow duration-200">
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <span className="text-xs bg-muted px-2 py-1 rounded font-mono">
+          <span className="text-xs bg-muted/80 px-2 py-1 rounded font-mono text-muted-foreground">
             #{index + 1}
           </span>
           <PositionSideBadge side={r.positionSide} />
           <span className="text-sm text-muted-foreground">
             {openTime.toLocaleString()} → {closeTime.toLocaleString()}
           </span>
-          <PnlBadge v={r.realizedPnl} />
         </div>
-        <div className="text-sm text-muted-foreground">
-          Qty {r.totalQuantity.toFixed(4)} | Entry {r.avgEntryPrice.toFixed(4)}{" "}
-          → Exit {r.avgExitPrice.toFixed(4)}
+        <div className="text-sm">
+          <span className="text-muted-foreground">数量:</span>{" "}
+          <span className="font-mono font-semibold text-slate-700">
+            {r.totalQuantity.toFixed(4)}
+          </span>
+          <span className="mx-2 text-muted-foreground">|</span>
+          <span className="text-muted-foreground">开仓:</span>{" "}
+          <span className="font-mono font-semibold text-slate-700">
+            {r.avgEntryPrice.toFixed(4)}
+          </span>
+          <span className="mx-2 text-muted-foreground">→</span>
+          <span className="text-muted-foreground">平仓:</span>{" "}
+          <span className="font-mono font-semibold text-slate-700">
+            {r.avgExitPrice.toFixed(4)}
+          </span>
         </div>
       </div>
 
       {/* 保证金和杠杆信息行 */}
-      <div className="mt-2 flex items-center gap-4 text-sm">
-        <div className="flex items-center gap-1">
-          <span className="text-muted-foreground">保证金:</span>
-          <span className="font-mono font-semibold">
+      <div className="mt-2.5 flex items-center gap-5 text-sm">
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground font-medium">保证金:</span>
+          <span className="font-mono font-semibold text-slate-800">
             {openAmount.toLocaleString("en-US", {
               minimumFractionDigits: 2,
               maximumFractionDigits: 2,
             })}
           </span>
-          <span className="text-xs text-muted-foreground font-medium">
+          <span className="text-xs text-muted-foreground font-medium bg-slate-100 px-1.5 py-0.5 rounded">
             {quoteCurrency}
           </span>
         </div>
-        <div className="flex items-center gap-1">
-          <span className="text-muted-foreground">杠杆:</span>
-          <span className="font-mono font-semibold text-blue-600">
+        <div className="flex items-center gap-1.5">
+          <span className="text-muted-foreground font-medium">杠杆:</span>
+          <span className="font-mono font-semibold text-blue-700 bg-blue-50 px-2 py-0.5 rounded">
             {leverage}x
           </span>
         </div>
       </div>
 
-      <div className="mt-3 flex justify-between items-center">
-        <div className="flex items-center gap-2">
+      <div className="mt-3.5 flex justify-between items-center">
+        <div className="flex items-center gap-3 flex-wrap">
           <RatioBadge
             realizedPnl={r.realizedPnl}
             quantity={r.totalQuantity}
             avgEntryPrice={r.avgEntryPrice}
             leverage={r.leverage || 5} // 默认使用 5 倍杠杆，如果数据中没有杠杆信息
           />
-          <span className="text-xs bg-blue-600/10 text-blue-700 px-2 py-0.5 rounded">
-            {formatDuration(durationMs)}
+          <MaxDrawdownBadge round={r} />
+          <PnlBadge v={r.realizedPnl} />
+          <span className="inline-flex items-center text-sm bg-blue-600/15 text-blue-700 px-2.5 py-1.5 rounded-md font-medium h-8">
+            持仓: {formatDuration(durationMs)}
           </span>
         </div>
         <KlineDialog round={r} />

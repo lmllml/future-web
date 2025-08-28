@@ -15,7 +15,7 @@ export default function RootLayout(
     <html lang="zh-CN" suppressHydrationWarning>
       <body className="min-h-screen bg-background text-foreground antialiased">
         <NuqsAdapter>
-          <main className="mx-auto max-w-6xl px-4 md:px-6 py-6">
+          <main className="mx-auto max-w-6xl pl-2 pr-4 md:pl-3 md:pr-6 py-6">
             {children}
           </main>
         </NuqsAdapter>
