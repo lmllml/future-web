@@ -22,7 +22,7 @@ function PnlBadge({ v }: { v: number }) {
   const positive = v > 0;
   return (
     <span
-      className={`inline-flex items-center px-3 py-1.5 rounded-md text-sm font-semibold h-8 ${
+      className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 ${
         positive
           ? "bg-green-600/20 text-green-700"
           : v < 0
@@ -59,7 +59,7 @@ function RatioBadge({
       title={`盈亏比例 (盈亏/保证金) | 杠杆: ${leverage}x | 保证金: ${margin.toFixed(
         2
       )}`}
-      className={`inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium h-8 ${
+      className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 ${
         positive
           ? "bg-green-600/15 text-green-700"
           : ratioPercent < 0
@@ -76,7 +76,7 @@ function PositionSideBadge({ side }: { side: "LONG" | "SHORT" }) {
   const isLong = side === "LONG";
   return (
     <span
-      className={`px-2.5 py-0.5 rounded-md text-sm font-semibold ${
+      className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 ${
         isLong
           ? "bg-blue-600/20 text-blue-700"
           : "bg-orange-600/20 text-orange-700"
@@ -141,7 +141,7 @@ function MaxDrawdownBadge({ round }: { round: RoundPnlData }) {
 
   if (loading) {
     return (
-      <span className="inline-flex items-center px-3 py-1.5 rounded-md text-sm bg-gray-100 text-gray-500 animate-pulse h-8">
+      <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-gray-100 text-gray-500 animate-pulse h-6">
         计算中...
       </span>
     );
@@ -149,7 +149,7 @@ function MaxDrawdownBadge({ round }: { round: RoundPnlData }) {
 
   if (maxDrawdown === null) {
     return (
-      <span className="inline-flex items-center px-3 py-1.5 rounded-md text-sm bg-gray-100 text-gray-500 h-8">
+      <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-gray-100 text-gray-500 h-6">
         无数据
       </span>
     );
@@ -157,7 +157,7 @@ function MaxDrawdownBadge({ round }: { round: RoundPnlData }) {
 
   return (
     <span
-      className="inline-flex items-center px-3 py-1.5 rounded-md text-sm font-medium bg-red-600/15 text-red-700 h-8"
+      className="inline-flex items-center px-2 py-1 rounded text-xs font-medium bg-red-600/15 text-red-700 h-6"
       title={`交易期间遭受的最大未实现亏损（最大浮亏）`}
     >
       最大浮亏: {maxDrawdown.toFixed(4)}
@@ -269,7 +269,7 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
           />
           <MaxDrawdownBadge round={r} />
           <PnlBadge v={r.realizedPnl} />
-          <span className="inline-flex items-center text-sm bg-blue-600/15 text-blue-700 px-2.5 py-1.5 rounded-md font-medium h-8">
+          <span className="inline-flex items-center text-xs bg-blue-600/15 text-blue-700 px-2 py-1 rounded font-medium h-6">
             持仓: {formatDuration(durationMs)}
           </span>
         </div>
