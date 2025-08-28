@@ -261,14 +261,14 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
 
       <div className="mt-3.5 flex justify-between items-center">
         <div className="flex items-center gap-3 flex-wrap">
+          <PnlBadge v={r.realizedPnl} />
+          <MaxDrawdownBadge round={r} />
           <RatioBadge
             realizedPnl={r.realizedPnl}
             quantity={r.totalQuantity}
             avgEntryPrice={r.avgEntryPrice}
             leverage={r.leverage || 5} // 默认使用 5 倍杠杆，如果数据中没有杠杆信息
           />
-          <MaxDrawdownBadge round={r} />
-          <PnlBadge v={r.realizedPnl} />
           <span className="inline-flex items-center text-xs bg-blue-600/15 text-blue-700 px-2 py-1 rounded font-medium h-6">
             持仓: {formatDuration(durationMs)}
           </span>
@@ -299,12 +299,14 @@ export function RoundList({
   const [hasMore, setHasMore] = useState(true);
   const [offset, setOffset] = useState(0);
 
-  // 计算平均盈亏率：每笔盈亏率之和 / 笔数（按保证金口径，和行内 RatioBadge 一致）
-  const avgPnlRatio = useMemo(() => {
-    if (rounds.length === 0) return 0;
+  // 计算平均盈利率和平均亏损率
+  const { avgProfitRatio, avgLossRatio } = useMemo(() => {
+    if (rounds.length === 0) return { avgProfitRatio: 0, avgLossRatio: 0 };
 
-    let pnlRatioSum = 0; // 盈亏率总和
-    let tradeCount = 0; // 有效交易笔数
+    let profitRatioSum = 0; // 盈利率总和
+    let lossRatioSum = 0; // 亏损率总和
+    let profitCount = 0; // 盈利交易笔数
+    let lossCount = 0; // 亏损交易笔数
 
     rounds.forEach((round) => {
       const leverage = round.leverage ?? 5; // 与 RatioBadge 保持一致
@@ -312,12 +314,22 @@ export function RoundList({
       const margin = leverage > 0 ? openAmount / leverage : 0; // 保证金
       if (margin > 0) {
         const singlePnlRatio = (round.realizedPnl / margin) * 100;
-        pnlRatioSum += singlePnlRatio;
-        tradeCount++;
+        if (singlePnlRatio > 0) {
+          // 盈利交易
+          profitRatioSum += singlePnlRatio;
+          profitCount++;
+        } else if (singlePnlRatio < 0) {
+          // 亏损交易
+          lossRatioSum += Math.abs(singlePnlRatio); // 取绝对值
+          lossCount++;
+        }
       }
     });
 
-    return tradeCount > 0 ? pnlRatioSum / tradeCount : 0;
+    return {
+      avgProfitRatio: profitCount > 0 ? profitRatioSum / profitCount : 0,
+      avgLossRatio: lossCount > 0 ? lossRatioSum / lossCount : 0,
+    };
   }, [rounds]);
 
   const observerRef = useRef<IntersectionObserver>();
@@ -486,7 +498,7 @@ export function RoundList({
             <div className="flex items-center gap-2">
               <span className="text-sm font-medium">总盈亏:</span>
               <span
-                className={`px-3 py-1 rounded text-base font-semibold ${
+                className={`inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 ${
                   totalPnl > 0
                     ? "bg-green-600/20 text-green-600"
                     : totalPnl < 0
@@ -497,19 +509,19 @@ export function RoundList({
                 {totalPnl.toFixed(4)}
               </span>
             </div>
-            <div className="flex items-center gap-2">
-              <span className="text-sm font-medium">平均盈亏率:</span>
-              <span
-                className={`px-3 py-1 rounded text-base font-semibold ${
-                  avgPnlRatio > 0
-                    ? "bg-green-600/20 text-green-600"
-                    : avgPnlRatio < 0
-                    ? "bg-red-600/20 text-red-600"
-                    : "bg-muted text-foreground"
-                }`}
-              >
-                {avgPnlRatio.toFixed(2)}%
-              </span>
+            <div className="flex items-center gap-4">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">平均盈利率:</span>
+                <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 bg-green-600/20 text-green-600">
+                  {avgProfitRatio.toFixed(2)}%
+                </span>
+              </div>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium">平均亏损率:</span>
+                <span className="inline-flex items-center px-2 py-1 rounded text-xs font-medium h-6 bg-red-600/20 text-red-600">
+                  {avgLossRatio.toFixed(2)}%
+                </span>
+              </div>
             </div>
           </div>
         )}
