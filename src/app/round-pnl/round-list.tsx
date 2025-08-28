@@ -113,6 +113,22 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
     }
   };
 
+  // 提取基础货币单位
+  const getQuoteCurrency = (symbol: string): string => {
+    if (symbol.endsWith("USDC")) return "USDC";
+    if (symbol.endsWith("USDT")) return "USDT";
+    if (symbol.endsWith("BUSD")) return "BUSD";
+    if (symbol.endsWith("BTC")) return "BTC";
+    if (symbol.endsWith("ETH")) return "ETH";
+    return "USDC"; // 默认
+  };
+
+  const quoteCurrency = getQuoteCurrency(symbol);
+  const leverage = r.leverage ?? 5;
+
+  // 计算保证金（开单金额除以杠杆）
+  const openAmount = (r.totalQuantity * r.avgEntryPrice) / leverage;
+
   return (
     <div className="rounded border p-3 bg-card/40">
       <div className="flex items-center justify-between">
@@ -129,6 +145,28 @@ function RoundCard({ r, index, symbol }: RoundCardProps) {
         <div className="text-sm text-muted-foreground">
           Qty {r.totalQuantity.toFixed(4)} | Entry {r.avgEntryPrice.toFixed(4)}{" "}
           → Exit {r.avgExitPrice.toFixed(4)}
+        </div>
+      </div>
+
+      {/* 保证金和杠杆信息行 */}
+      <div className="mt-2 flex items-center gap-4 text-sm">
+        <div className="flex items-center gap-1">
+          <span className="text-muted-foreground">保证金:</span>
+          <span className="font-mono font-semibold">
+            {openAmount.toLocaleString("en-US", {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            })}
+          </span>
+          <span className="text-xs text-muted-foreground font-medium">
+            {quoteCurrency}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          <span className="text-muted-foreground">杠杆:</span>
+          <span className="font-mono font-semibold text-blue-600">
+            {leverage}x
+          </span>
         </div>
       </div>
 
@@ -190,6 +228,7 @@ export function RoundList({
 
     return tradeCount > 0 ? pnlRatioSum / tradeCount : 0;
   }, [rounds]);
+
   const observerRef = useRef<IntersectionObserver>();
   const lastElementRef = useRef<HTMLDivElement>(null);
 
