@@ -94,6 +94,8 @@ export function StopLossDialog({
         data: Array<{
           roundId: string;
           symbol: string;
+          exchange: string;
+          market: string;
           positionSide: "LONG" | "SHORT";
           totalQuantity: number;
           avgEntryPrice: number;
@@ -101,6 +103,7 @@ export function StopLossDialog({
           realizedPnl: number;
           openTime: string;
           closeTime: string;
+          openTradeIds: string[];
         }>;
         total: number;
         totalPnl: number;
@@ -181,6 +184,93 @@ export function StopLossDialog({
                   totalLossAmount += Math.abs(pnlAmount);
                 }
                 continue;
+              }
+
+              // 若有多次开仓：如果第一笔开仓在第二笔开仓前已触发止损，则直接止损退出
+              if (trade.openTradeIds && trade.openTradeIds.length >= 2) {
+                try {
+                  const { data: openTradesResp } =
+                    await cryptoApi.getTradesByIds<{
+                      data: Array<{
+                        price: number;
+                        quantity: number;
+                        timestamp: string;
+                        tradeId: string;
+                        orderId?: string;
+                      }>;
+                    }>({
+                      symbol: trade.symbol,
+                      exchange: trade.exchange,
+                      market: trade.market,
+                      tradeIds: trade.openTradeIds.join(","),
+                    });
+
+                  const openTrades = (openTradesResp || []).sort(
+                    (a, b) =>
+                      new Date(a.timestamp).getTime() -
+                      new Date(b.timestamp).getTime()
+                  );
+
+                  if (openTrades.length >= 2) {
+                    const first = openTrades[0];
+                    const second = openTrades[1];
+                    const firstOpenTime = new Date(
+                      first.timestamp
+                    ).toISOString();
+                    const secondOpenTime = new Date(
+                      second.timestamp
+                    ).toISOString();
+
+                    // 在第一笔到第二笔之间检查是否达到止损价
+                    const firstStopPrice = isLong
+                      ? first.price * (1 + stopLossPercentage / 100)
+                      : first.price * (1 - stopLossPercentage / 100);
+
+                    const betweenK = klines.filter(
+                      (k) =>
+                        k.openTime >= firstOpenTime &&
+                        k.closeTime <= secondOpenTime
+                    );
+
+                    let earlyHit = false;
+                    if (betweenK.length > 0) {
+                      if (isLong) {
+                        const minLow = Math.min(...betweenK.map((k) => k.low));
+                        earlyHit = minLow <= firstStopPrice;
+                      } else {
+                        const maxHigh = Math.max(
+                          ...betweenK.map((k) => k.high)
+                        );
+                        earlyHit = maxHigh >= firstStopPrice;
+                      }
+                    }
+
+                    if (earlyHit) {
+                      // 以第一笔开仓的数量与价格，在止损价退出，不再有后续开单
+                      const posValue = first.price * first.quantity;
+                      const pnlRateEarly = isLong
+                        ? ((firstStopPrice - first.price) / first.price) * 100
+                        : ((first.price - firstStopPrice) / first.price) * 100;
+                      const pnlAmountEarly = (pnlRateEarly / 100) * posValue;
+
+                      totalTrades++;
+                      totalNetProfit += pnlAmountEarly;
+                      if (pnlAmountEarly > 0) {
+                        profitTrades++;
+                        totalProfitAmount += pnlAmountEarly;
+                      } else if (pnlAmountEarly < 0) {
+                        lossTrades++;
+                        totalLossAmount += Math.abs(pnlAmountEarly);
+                      }
+
+                      // 跳过后续逻辑，处理下一笔回合
+                      continue;
+                    }
+                  }
+                } catch (e) {
+                  // 获取原始开仓交易失败则忽略早停检查，继续正常流程
+                  console.warn("获取开仓交易失败，跳过早停检查", e);
+                }
               }
 
               // 计算最大浮亏率
