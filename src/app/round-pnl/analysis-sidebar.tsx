@@ -3,7 +3,8 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CumulativePnlDialog } from "@/components/charts/cumulative-pnl-dialog";
-import { TrendingUp, BarChart3, PieChart, Calendar } from "lucide-react";
+import { StopLossDialog } from "@/components/charts/stop-loss-dialog";
+import { TrendingUp, Shield } from "lucide-react";
 
 interface Props {
   symbol: string;
@@ -30,6 +31,7 @@ export function AnalysisSidebar({
   endTime,
 }: Props) {
   const [showCumulativePnl, setShowCumulativePnl] = useState(false);
+  const [showStopLoss, setShowStopLoss] = useState(false);
 
   return (
     <div className="w-64 flex-shrink-0">
@@ -49,32 +51,15 @@ export function AnalysisSidebar({
             累计盈亏趋势
           </Button>
 
-          {/* 未来可扩展的按钮 */}
+          {/* 计算最佳止损点 */}
           <Button
             variant="outline"
-            className="w-full justify-start opacity-50 cursor-not-allowed"
-            disabled
+            className="w-full justify-start"
+            onClick={() => setShowStopLoss(true)}
+            disabled={loading}
           >
-            <BarChart3 className="w-4 h-4 mr-2" />
-            收益分布图
-          </Button>
-
-          <Button
-            variant="outline"
-            className="w-full justify-start opacity-50 cursor-not-allowed"
-            disabled
-          >
-            <PieChart className="w-4 h-4 mr-2" />
-            多空比例
-          </Button>
-
-          <Button
-            variant="outline"
-            className="w-full justify-start opacity-50 cursor-not-allowed"
-            disabled
-          >
-            <Calendar className="w-4 h-4 mr-2" />
-            月度分析
+            <Shield className="w-4 h-4 mr-2" />
+            计算最佳止损点
           </Button>
         </div>
       </div>
@@ -83,6 +68,20 @@ export function AnalysisSidebar({
       <CumulativePnlDialog
         open={showCumulativePnl}
         onOpenChange={setShowCumulativePnl}
+        symbol={symbol}
+        minPnl={minPnl}
+        maxPnl={maxPnl}
+        minQuantity={minQuantity}
+        maxQuantity={maxQuantity}
+        positionSide={positionSide}
+        startTime={startTime}
+        endTime={endTime}
+      />
+
+      {/* 止损分析弹窗 */}
+      <StopLossDialog
+        open={showStopLoss}
+        onOpenChange={setShowStopLoss}
         symbol={symbol}
         minPnl={minPnl}
         maxPnl={maxPnl}
