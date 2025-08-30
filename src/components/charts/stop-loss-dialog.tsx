@@ -8,7 +8,15 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2, TrendingDown, TrendingUp, Calculator, ArrowUp, ArrowDown, ChevronsUpDown } from "lucide-react";
+import {
+  Loader2,
+  TrendingDown,
+  TrendingUp,
+  Calculator,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
+} from "lucide-react";
 import { cryptoApi } from "@/lib/api";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
@@ -955,11 +963,11 @@ export function StopLossDialog({
 
       {/* 交易列表对话框 */}
       <Dialog open={showTradeList} onOpenChange={setShowTradeList}>
-        <DialogContent className="max-w-6xl w-[95vw] max-h-[80vh] overflow-hidden">
+        <DialogContent className="max-w-none w-[98vw] max-h-[90vh] overflow-hidden">
           <DialogHeader>
             <DialogTitle>{tradeListTitle}</DialogTitle>
           </DialogHeader>
-          <div className="max-h-[70vh] overflow-auto">
+          <div className="max-h-[82vh] overflow-auto">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
@@ -978,14 +986,14 @@ export function StopLossDialog({
                       <button
                         className="inline-flex items-center gap-1 hover:text-blue-600"
                         onClick={() => {
-                          if (sortKey === "pnl") setSortAsc(!sortAsc);
-                          else {
-                            setSortKey("pnl");
-                            setSortAsc(false);
-                          }
+                          const nextAsc = sortKey === "pnl" ? !sortAsc : false;
+                          setSortKey("pnl");
+                          setSortAsc(nextAsc);
                           setSelectedTrades((arr) =>
                             [...arr].sort((a, b) =>
-                              (sortAsc ? a.pnlAmount - b.pnlAmount : b.pnlAmount - a.pnlAmount)
+                              nextAsc
+                                ? a.pnlAmount - b.pnlAmount
+                                : b.pnlAmount - a.pnlAmount
                             )
                           );
                         }}
@@ -1005,16 +1013,14 @@ export function StopLossDialog({
                       <button
                         className="inline-flex items-center gap-1 hover:text-blue-600"
                         onClick={() => {
-                          if (sortKey === "original") setSortAsc(!sortAsc);
-                          else {
-                            setSortKey("original");
-                            setSortAsc(false);
-                          }
+                          const nextAsc = sortKey === "original" ? !sortAsc : false;
+                          setSortKey("original");
+                          setSortAsc(nextAsc);
                           setSelectedTrades((arr) =>
                             [...arr].sort((a, b) =>
-                              (sortAsc
+                              nextAsc
                                 ? a.originalPnlAmount - b.originalPnlAmount
-                                : b.originalPnlAmount - a.originalPnlAmount)
+                                : b.originalPnlAmount - a.originalPnlAmount
                             )
                           );
                         }}
