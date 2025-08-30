@@ -875,11 +875,12 @@ export function StopLossDialog({
           <DialogHeader>
             <DialogTitle>{tradeListTitle}</DialogTitle>
           </DialogHeader>
-          <div className="flex-1 overflow-auto">
+          <div className="max-h-[70vh] overflow-auto">
             <div className="overflow-x-auto">
               <table className="w-full text-sm">
                 <thead>
                   <tr className="border-b">
+                    <th className="text-left p-2 w-12">序号</th>
                     <th className="text-left p-2">回合ID</th>
                     <th className="text-left p-2">方向</th>
                     <th className="text-left p-2">入场价</th>
@@ -899,6 +900,7 @@ export function StopLossDialog({
                       key={`${trade.roundId}-${index}`}
                       className="border-b hover:bg-muted/20"
                     >
+                      <td className="p-2 text-center">{index + 1}</td>
                       <td className="p-2 font-mono text-xs">
                         {trade.roundId.slice(-8)}
                       </td>
