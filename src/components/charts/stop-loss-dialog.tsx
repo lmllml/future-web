@@ -153,6 +153,81 @@ export function StopLossDialog({
         throw new Error("没有找到符合条件的交易数据");
       }
 
+      // 简单缓存：为每个回合仅获取一次K线与开仓成交，后续止损等级复用，避免重复请求
+      const klineCache = new Map<string, KlineData[] | null>();
+      const openTradesCache = new Map<
+        string,
+        Array<{ price: number; quantity: number; timestamp: string; tradeId: string; orderId?: string }> | null
+      >();
+
+      async function getKlinesOnce(trade: {
+        roundId: string;
+        symbol: string;
+        exchange: string;
+        market: string;
+        openTime: string;
+        closeTime: string;
+      }): Promise<KlineData[]> {
+        if (klineCache.has(trade.roundId)) {
+          return klineCache.get(trade.roundId) || [];
+        }
+        try {
+          const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange || "binance",
+            market: "futures",
+            interval: "5m", // 使用 5m 降低数据量，性能更好
+            startTime: trade.openTime,
+            endTime: trade.closeTime,
+            order: "asc",
+          });
+          klineCache.set(trade.roundId, data || null);
+          return data || [];
+        } catch {
+          klineCache.set(trade.roundId, null);
+          return [];
+        }
+      }
+
+      async function getFirstTwoOpensOnce(trade: {
+        roundId: string;
+        symbol: string;
+        exchange: string;
+        market: string;
+        openTradeIds?: string[];
+      }): Promise<
+        Array<{ price: number; quantity: number; timestamp: string; tradeId: string; orderId?: string }>
+      > {
+        if (!trade.openTradeIds || trade.openTradeIds.length < 2) return [];
+        if (openTradesCache.has(trade.roundId)) {
+          return openTradesCache.get(trade.roundId) || [];
+        }
+        try {
+          const { data } = await cryptoApi.getTradesByIds<{
+            data: Array<{
+              price: number;
+              quantity: number;
+              timestamp: string;
+              tradeId: string;
+              orderId?: string;
+            }>;
+          }>({
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange,
+            market: (trade as any).market,
+            tradeIds: trade.openTradeIds.join(","),
+          });
+          const opens = (data || []).sort(
+            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          openTradesCache.set(trade.roundId, opens);
+          return opens;
+        } catch {
+          openTradesCache.set(trade.roundId, null);
+          return [];
+        }
+      }
+
       // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上无止损对比）
       const stopLossLevels = [
         -999, // 无止损（用-999表示永不触发）
@@ -179,7 +254,7 @@ export function StopLossDialog({
         -50.0,
       ];
 
-      // 为了提高性能，我们将并发处理止损计算
+      // 为了提高性能，我们将并发处理止损计算（并使用缓存避免重复请求）
       const riskLevels = await Promise.all(
         stopLossLevels.map(async (stopLossPercentage) => {
           let totalTrades = 0;
@@ -206,18 +281,8 @@ export function StopLossDialog({
             }
 
             try {
-              // 获取交易期间的K线数据（使用1分钟K线，已在其他模块验证可用）
-              const { data: klines } = await cryptoApi.listKlines<{
-                data: KlineData[];
-              }>({
-                symbol: trade.symbol,
-                exchange: (trade as any).exchange || "binance",
-                market: "futures",
-                interval: "1m",
-                startTime: trade.openTime,
-                endTime: trade.closeTime,
-                order: "asc",
-              });
+              // 获取交易期间的K线数据（使用缓存 + 5m 粒度）
+              const klines = await getKlinesOnce(trade as any);
 
               if (!klines || klines.length === 0) {
                 // 如果没有K线数据，使用原始交易结果作为回退，并同时补充详情，避免计数与列表不一致
@@ -262,27 +327,7 @@ export function StopLossDialog({
               // 若有多次开仓：如果第一笔开仓在第二笔开仓前已触发止损，则直接止损退出
               if (trade.openTradeIds && trade.openTradeIds.length >= 2) {
                 try {
-                  const { data: openTradesResp } =
-                    await cryptoApi.getTradesByIds<{
-                      data: Array<{
-                        price: number;
-                        quantity: number;
-                        timestamp: string;
-                        tradeId: string;
-                        orderId?: string;
-                      }>;
-                    }>({
-                      symbol: trade.symbol,
-                      exchange: trade.exchange,
-                      market: trade.market,
-                      tradeIds: trade.openTradeIds.join(","),
-                    });
-
-                  const openTrades = (openTradesResp || []).sort(
-                    (a, b) =>
-                      new Date(a.timestamp).getTime() -
-                      new Date(b.timestamp).getTime()
-                  );
+                  const openTrades = await getFirstTwoOpensOnce(trade as any);
 
                   if (openTrades.length >= 2) {
                     const first = openTrades[0];
