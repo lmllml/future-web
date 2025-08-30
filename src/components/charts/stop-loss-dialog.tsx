@@ -44,6 +44,22 @@ interface Props {
   endTime?: string;
 }
 
+interface TradeDetail {
+  roundId: string;
+  symbol: string;
+  positionSide: "LONG" | "SHORT";
+  entryPrice: number;
+  exitPrice: number;
+  quantity: number;
+  finalPrice: number;
+  pnlAmount: number;
+  pnlRate: number;
+  wouldHitStopLoss: boolean;
+  maxDrawdownRate: number;
+  openTime: string;
+  closeTime: string;
+}
+
 interface StopLossAnalysis {
   optimalStopLoss: {
     percentage: number;
@@ -63,6 +79,8 @@ interface StopLossAnalysis {
     avgProfit: number;
     avgLoss: number;
     profitFactor: number;
+    profitTradeDetails: TradeDetail[];
+    lossTradeDetails: TradeDetail[];
   }>;
 }
 
@@ -78,10 +96,13 @@ export function StopLossDialog({
   startTime,
   endTime,
 }: Props) {
-  const [isFullscreen, setIsFullscreen] = useState(false);
+  const [isFullscreen, setIsFullscreen] = useState(true);
   const [analysis, setAnalysis] = useState<StopLossAnalysis | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showTradeList, setShowTradeList] = useState(false);
+  const [selectedTrades, setSelectedTrades] = useState<TradeDetail[]>([]);
+  const [tradeListTitle, setTradeListTitle] = useState("");
 
   // 根据实际交易数据计算最佳止损点
   const calculateStopLoss = async () => {
@@ -128,9 +149,30 @@ export function StopLossDialog({
         throw new Error("没有找到符合条件的交易数据");
       }
 
-      // 定义要测试的止损水平（更细粒度的测试）
+      // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上无止损对比）
       const stopLossLevels = [
-        -0.5, -1.0, -1.5, -2.0, -2.5, -3.0, -3.5, -4.0, -5.0, -6.0, -8.0, -10.0,
+        -999, // 无止损（用-999表示永不触发）
+        -0.5,
+        -1.0,
+        -1.5,
+        -2.0,
+        -2.5,
+        -3.0,
+        -3.5,
+        -4.0,
+        -5.0,
+        -6.0,
+        -8.0,
+        -10.0,
+        -12.0,
+        -15.0,
+        -20.0,
+        -25.0,
+        -30.0,
+        -35.0,
+        -40.0,
+        -45.0,
+        -50.0,
       ];
 
       // 为了提高性能，我们将并发处理止损计算
@@ -142,6 +184,8 @@ export function StopLossDialog({
           let totalProfitAmount = 0;
           let totalLossAmount = 0;
           let totalNetProfit = 0;
+          const profitTradeDetails: TradeDetail[] = [];
+          const lossTradeDetails: TradeDetail[] = [];
 
           // 处理全部筛选到的交易；如需提速可按需限制数量
           const tradesToProcess = allTrades;
@@ -312,12 +356,30 @@ export function StopLossDialog({
               totalTrades++;
               totalNetProfit += pnlAmount;
 
+              const tradeDetail: TradeDetail = {
+                roundId: trade.roundId,
+                symbol: trade.symbol,
+                positionSide: trade.positionSide,
+                entryPrice,
+                exitPrice,
+                quantity,
+                finalPrice,
+                pnlAmount,
+                pnlRate,
+                wouldHitStopLoss,
+                maxDrawdownRate,
+                openTime: trade.openTime,
+                closeTime: trade.closeTime,
+              };
+
               if (pnlAmount > 0) {
                 profitTrades++;
                 totalProfitAmount += pnlAmount;
+                profitTradeDetails.push(tradeDetail);
               } else if (pnlAmount < 0) {
                 lossTrades++;
                 totalLossAmount += Math.abs(pnlAmount);
+                lossTradeDetails.push(tradeDetail);
               }
 
               // 调试信息（前3笔交易）
@@ -364,7 +426,7 @@ export function StopLossDialog({
           const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
 
           return {
-            percentage: stopLossPercentage,
+            percentage: stopLossPercentage === -999 ? 0 : stopLossPercentage, // 显示为"无止损"
             totalProfit: Number(totalNetProfit.toFixed(2)),
             winRate: Number(winRate.toFixed(1)),
             totalTrades,
@@ -373,6 +435,8 @@ export function StopLossDialog({
             avgProfit: Number(avgProfit.toFixed(2)),
             avgLoss: Number(avgLoss.toFixed(2)),
             profitFactor: Number(profitFactor.toFixed(2)),
+            profitTradeDetails,
+            lossTradeDetails,
           };
         })
       );
@@ -438,13 +502,6 @@ export function StopLossDialog({
               >
                 {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 重新计算
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                onClick={() => setIsFullscreen(!isFullscreen)}
-              >
-                {isFullscreen ? "退出全屏" : "全屏显示"}
               </Button>
             </div>
           </div>
@@ -551,11 +608,15 @@ export function StopLossDialog({
                             level.percentage ===
                             analysis.optimalStopLoss.percentage
                               ? "bg-blue-50 dark:bg-blue-950/20 font-semibold"
+                              : level.percentage === 0
+                              ? "bg-green-50 dark:bg-green-950/20"
                               : ""
                           }`}
                         >
                           <td className="p-2 font-medium">
-                            {level.percentage}%
+                            {level.percentage === 0
+                              ? "无止损"
+                              : `${level.percentage}%`}
                           </td>
                           <td className="p-2">
                             <span
@@ -584,11 +645,41 @@ export function StopLossDialog({
                             </span>
                           </td>
                           <td className="p-2">{level.totalTrades}</td>
-                          <td className="p-2 text-green-600">
-                            {level.profitTrades}
+                          <td className="p-2">
+                            <button
+                              className="text-green-600 hover:text-green-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-green-50 transition-all"
+                              onClick={() => {
+                                setSelectedTrades(level.profitTradeDetails);
+                                setTradeListTitle(
+                                  `${
+                                    level.percentage === 0
+                                      ? "无止损"
+                                      : `${level.percentage}%止损`
+                                  } - 盈利交易 (${level.profitTrades}笔)`
+                                );
+                                setShowTradeList(true);
+                              }}
+                            >
+                              {level.profitTrades}
+                            </button>
                           </td>
-                          <td className="p-2 text-red-600">
-                            {level.lossTrades}
+                          <td className="p-2">
+                            <button
+                              className="text-red-600 hover:text-red-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-red-50 transition-all"
+                              onClick={() => {
+                                setSelectedTrades(level.lossTradeDetails);
+                                setTradeListTitle(
+                                  `${
+                                    level.percentage === 0
+                                      ? "无止损"
+                                      : `${level.percentage}%止损`
+                                  } - 亏损交易 (${level.lossTrades}笔)`
+                                );
+                                setShowTradeList(true);
+                              }}
+                            >
+                              {level.lossTrades}
+                            </button>
                           </td>
                           <td className="p-2 text-green-600">
                             ${level.avgProfit.toLocaleString()}
@@ -661,6 +752,124 @@ export function StopLossDialog({
           )}
         </div>
       </DialogContent>
+
+      {/* 交易列表对话框 */}
+      <Dialog open={showTradeList} onOpenChange={setShowTradeList}>
+        <DialogContent className="max-w-6xl w-[95vw] max-h-[80vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>{tradeListTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="flex-1 overflow-auto">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left p-2">回合ID</th>
+                    <th className="text-left p-2">方向</th>
+                    <th className="text-left p-2">入场价</th>
+                    <th className="text-left p-2">原出场价</th>
+                    <th className="text-left p-2">实际出场价</th>
+                    <th className="text-left p-2">数量</th>
+                    <th className="text-left p-2">最大浮亏%</th>
+                    <th className="text-left p-2">是否止损</th>
+                    <th className="text-left p-2">盈亏率%</th>
+                    <th className="text-left p-2">盈亏金额($)</th>
+                    <th className="text-left p-2">开仓时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedTrades.map((trade, index) => (
+                    <tr
+                      key={`${trade.roundId}-${index}`}
+                      className="border-b hover:bg-muted/20"
+                    >
+                      <td className="p-2 font-mono text-xs">
+                        {trade.roundId.slice(-8)}
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.positionSide === "LONG"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {trade.positionSide === "LONG" ? "多单" : "空单"}
+                        </span>
+                      </td>
+                      <td className="p-2">${trade.entryPrice.toFixed(4)}</td>
+                      <td className="p-2">${trade.exitPrice.toFixed(4)}</td>
+                      <td className="p-2">
+                        <span
+                          className={
+                            trade.wouldHitStopLoss
+                              ? "text-orange-600 font-semibold"
+                              : ""
+                          }
+                        >
+                          ${trade.finalPrice.toFixed(4)}
+                        </span>
+                      </td>
+                      <td className="p-2">{trade.quantity.toFixed(4)}</td>
+                      <td className="p-2">
+                        <span
+                          className={`${
+                            trade.maxDrawdownRate < -5
+                              ? "text-red-600"
+                              : trade.maxDrawdownRate < -2
+                              ? "text-orange-600"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {trade.maxDrawdownRate.toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.wouldHitStopLoss
+                              ? "bg-orange-100 text-orange-800"
+                              : "bg-gray-100 text-gray-800"
+                          }`}
+                        >
+                          {trade.wouldHitStopLoss ? "是" : "否"}
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`font-semibold ${
+                            trade.pnlRate > 0
+                              ? "text-green-600"
+                              : "text-red-600"
+                          }`}
+                        >
+                          {trade.pnlRate > 0 ? "+" : ""}
+                          {trade.pnlRate.toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`font-semibold ${
+                            trade.pnlAmount > 0
+                              ? "text-green-600"
+                              : "text-red-600"
+                          }`}
+                        >
+                          {trade.pnlAmount > 0 ? "+" : ""}$
+                          {trade.pnlAmount.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="p-2 text-xs text-muted-foreground">
+                        {new Date(trade.openTime).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }
