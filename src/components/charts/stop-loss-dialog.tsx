@@ -64,6 +64,8 @@ interface StopLossAnalysis {
   optimalStopLoss: {
     percentage: number;
     totalProfit: number;
+    totalProfitAmount: number; // 毛盈利总额（不含亏损）
+    totalLossAmount: number; // 毛亏损总额（绝对值）
     winRate: number;
     avgProfit: number;
     avgLoss: number;
@@ -72,6 +74,8 @@ interface StopLossAnalysis {
   riskLevels: Array<{
     percentage: number;
     totalProfit: number;
+    totalProfitAmount: number; // 毛盈利
+    totalLossAmount: number; // 毛亏损（绝对值）
     winRate: number;
     totalTrades: number;
     profitTrades: number;
@@ -216,16 +220,41 @@ export function StopLossDialog({
               });
 
               if (!klines || klines.length === 0) {
-                // 如果没有K线数据，使用原始交易结果作为回退
+                // 如果没有K线数据，使用原始交易结果作为回退，并同时补充详情，避免计数与列表不一致
+                const entryPrice = trade.avgEntryPrice;
+                const exitPrice = trade.avgExitPrice;
+                const quantity = trade.totalQuantity;
                 const pnlAmount = trade.realizedPnl;
                 totalTrades++;
                 totalNetProfit += pnlAmount;
+                const detail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice: exitPrice,
+                  pnlAmount,
+                  pnlRate:
+                    ((isLong
+                      ? exitPrice - entryPrice
+                      : entryPrice - exitPrice) /
+                      entryPrice) *
+                    100,
+                  wouldHitStopLoss: false,
+                  maxDrawdownRate: 0,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                };
                 if (pnlAmount > 0) {
                   profitTrades++;
                   totalProfitAmount += pnlAmount;
+                  profitTradeDetails.push(detail);
                 } else if (pnlAmount < 0) {
                   lossTrades++;
                   totalLossAmount += Math.abs(pnlAmount);
+                  lossTradeDetails.push(detail);
                 }
                 continue;
               }
@@ -299,12 +328,49 @@ export function StopLossDialog({
 
                       totalTrades++;
                       totalNetProfit += pnlAmountEarly;
+
+                      // 估算最大浮亏用于展示；若无法计算则用阈值替代
+                      let maxDd: number;
+                      if (betweenK.length > 0) {
+                        if (isLong) {
+                          const minLow = Math.min(
+                            ...betweenK.map((k) => k.low)
+                          );
+                          maxDd = ((minLow - first.price) / first.price) * 100;
+                        } else {
+                          const maxHigh = Math.max(
+                            ...betweenK.map((k) => k.high)
+                          );
+                          maxDd = ((first.price - maxHigh) / first.price) * 100;
+                        }
+                      } else {
+                        maxDd = stopLossPercentage; // 至少达到止损阈值
+                      }
+
+                      const detail: TradeDetail = {
+                        roundId: trade.roundId,
+                        symbol: trade.symbol,
+                        positionSide: trade.positionSide,
+                        entryPrice: first.price,
+                        exitPrice: trade.avgExitPrice,
+                        quantity: first.quantity,
+                        finalPrice: firstStopPrice,
+                        pnlAmount: pnlAmountEarly,
+                        pnlRate: pnlRateEarly,
+                        wouldHitStopLoss: true,
+                        maxDrawdownRate: maxDd,
+                        openTime: first.timestamp,
+                        closeTime: trade.closeTime,
+                      } as any;
+
                       if (pnlAmountEarly > 0) {
                         profitTrades++;
                         totalProfitAmount += pnlAmountEarly;
+                        profitTradeDetails.push(detail);
                       } else if (pnlAmountEarly < 0) {
                         lossTrades++;
                         totalLossAmount += Math.abs(pnlAmountEarly);
+                        lossTradeDetails.push(detail);
                       }
 
                       // 跳过后续逻辑，处理下一笔回合
@@ -403,17 +469,41 @@ export function StopLossDialog({
               }
             } catch (error) {
               console.error(`获取交易 ${trade.roundId} 的K线数据失败:`, error);
-              // 如果K线数据获取失败，使用原始交易结果
+              // 如果K线数据获取失败，使用原始交易结果，并补充详情，避免计数与列表不一致
+              const entryPrice = trade.avgEntryPrice;
+              const exitPrice = trade.avgExitPrice;
+              const quantity = trade.totalQuantity;
               const pnlAmount = trade.realizedPnl;
               totalTrades++;
               totalNetProfit += pnlAmount;
 
+              const detail: TradeDetail = {
+                roundId: trade.roundId,
+                symbol: trade.symbol,
+                positionSide: trade.positionSide,
+                entryPrice,
+                exitPrice,
+                quantity,
+                finalPrice: exitPrice,
+                pnlAmount,
+                pnlRate:
+                  ((isLong ? exitPrice - entryPrice : entryPrice - exitPrice) /
+                    entryPrice) *
+                  100,
+                wouldHitStopLoss: false,
+                maxDrawdownRate: 0,
+                openTime: trade.openTime,
+                closeTime: trade.closeTime,
+              };
+
               if (pnlAmount > 0) {
                 profitTrades++;
                 totalProfitAmount += pnlAmount;
+                profitTradeDetails.push(detail);
               } else if (pnlAmount < 0) {
                 lossTrades++;
                 totalLossAmount += Math.abs(pnlAmount);
+                lossTradeDetails.push(detail);
               }
             }
           }
@@ -428,6 +518,8 @@ export function StopLossDialog({
           return {
             percentage: stopLossPercentage === -999 ? 0 : stopLossPercentage, // 显示为"无止损"
             totalProfit: Number(totalNetProfit.toFixed(2)),
+            totalProfitAmount: Number(totalProfitAmount.toFixed(2)),
+            totalLossAmount: Number(totalLossAmount.toFixed(2)),
             winRate: Number(winRate.toFixed(1)),
             totalTrades,
             profitTrades,
@@ -450,6 +542,8 @@ export function StopLossDialog({
         optimalStopLoss: {
           percentage: bestLevel.percentage,
           totalProfit: bestLevel.totalProfit,
+          totalProfitAmount: bestLevel.totalProfitAmount,
+          totalLossAmount: bestLevel.totalLossAmount,
           winRate: bestLevel.winRate,
           avgProfit: bestLevel.avgProfit,
           avgLoss: bestLevel.avgLoss,
@@ -550,7 +644,21 @@ export function StopLossDialog({
                     <p className="text-2xl font-bold text-orange-600">
                       ${analysis.optimalStopLoss.totalProfit.toLocaleString()}
                     </p>
-                    <p className="text-xs text-muted-foreground">总盈利</p>
+                    <p className="text-xs text-muted-foreground">盈利</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">
+                      $
+                      {analysis.optimalStopLoss.totalProfitAmount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">盈利总额</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-red-600">
+                      -$
+                      {analysis.optimalStopLoss.totalLossAmount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">亏损总额</p>
                   </div>
                   <div className="text-center">
                     <p className="text-2xl font-bold text-green-600">
@@ -590,7 +698,7 @@ export function StopLossDialog({
                     <thead>
                       <tr className="border-b">
                         <th className="text-left p-2">止损%</th>
-                        <th className="text-left p-2">总盈利($)</th>
+                        <th className="text-left p-2">盈利($)</th>
                         <th className="text-left p-2">胜率</th>
                         <th className="text-left p-2">总交易</th>
                         <th className="text-left p-2">盈利次数</th>
@@ -598,6 +706,8 @@ export function StopLossDialog({
                         <th className="text-left p-2">平均盈利($)</th>
                         <th className="text-left p-2">平均亏损($)</th>
                         <th className="text-left p-2">盈亏比</th>
+                        <th className="text-left p-2">盈利总额($)</th>
+                        <th className="text-left p-2">亏损总额($)</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -699,6 +809,12 @@ export function StopLossDialog({
                             >
                               {level.profitFactor}
                             </span>
+                          </td>
+                          <td className="p-2 text-green-600">
+                            ${level.totalProfitAmount.toLocaleString()}
+                          </td>
+                          <td className="p-2 text-red-600">
+                            -${level.totalLossAmount.toLocaleString()}
                           </td>
                         </tr>
                       ))}
