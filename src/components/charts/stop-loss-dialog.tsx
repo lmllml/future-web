@@ -71,6 +71,8 @@ interface TradeDetail {
   maxDrawdownRate: number;
   openTime: string;
   closeTime: string;
+  openTradeIds: string[];
+  closeTradeIds: string[];
 }
 
 interface StopLossAnalysis {
@@ -144,6 +146,7 @@ export function StopLossDialog({
           openTime: string;
           closeTime: string;
           openTradeIds: string[];
+          closeTradeIds: string[];
         }>;
         total: number;
         totalPnl: number;
@@ -356,6 +359,8 @@ export function StopLossDialog({
                   maxDrawdownRate: 0,
                   openTime: trade.openTime,
                   closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
                 };
                 if (pnlAmount > 0) {
                   profitTrades++;
@@ -452,7 +457,9 @@ export function StopLossDialog({
                         maxDrawdownRate: maxDd,
                         openTime: first.timestamp,
                         closeTime: trade.closeTime,
-                      } as any;
+                        openTradeIds: trade.openTradeIds || [],
+                        closeTradeIds: trade.closeTradeIds || [],
+                      };
 
                       if (pnlAmountEarly > 0) {
                         profitTrades++;
@@ -528,6 +535,8 @@ export function StopLossDialog({
                 maxDrawdownRate,
                 openTime: trade.openTime,
                 closeTime: trade.closeTime,
+                openTradeIds: trade.openTradeIds || [],
+                                              closeTradeIds: trade.closeTradeIds || [],
               };
 
               if (pnlAmount > 0) {
@@ -587,6 +596,8 @@ export function StopLossDialog({
                 maxDrawdownRate: 0,
                 openTime: trade.openTime,
                 closeTime: trade.closeTime,
+                openTradeIds: trade.openTradeIds || [],
+                                              closeTradeIds: trade.closeTradeIds || [],
               };
 
               if (pnlAmount > 0) {
@@ -1050,22 +1061,25 @@ export function StopLossDialog({
                       <td className="p-2 text-center">{index + 1}</td>
                       <td className="p-2 font-mono text-xs">
                         <KlineDialog
-                          round={{
-                            roundId: trade.roundId,
-                            symbol,
-                            exchange: "binance",
-                            market: "futures",
-                            positionSide: trade.positionSide,
-                            totalQuantity: trade.quantity,
-                            avgEntryPrice: trade.entryPrice,
-                            avgExitPrice: trade.exitPrice,
-                            realizedPnl: trade.originalPnlAmount ?? trade.pnlAmount,
-                            totalFees: 0,
-                            openTime: trade.openTime,
-                            closeTime: trade.closeTime,
-                            openTradeIds: [],
-                            closeTradeIds: [],
-                          } as any}
+                          round={
+                            {
+                              roundId: trade.roundId,
+                              symbol,
+                              exchange: "binance",
+                              market: "futures",
+                              positionSide: trade.positionSide,
+                              totalQuantity: trade.quantity,
+                              avgEntryPrice: trade.entryPrice,
+                              avgExitPrice: trade.exitPrice,
+                              realizedPnl:
+                                trade.originalPnlAmount ?? trade.pnlAmount,
+                              totalFees: 0,
+                              openTime: trade.openTime,
+                              closeTime: trade.closeTime,
+                              openTradeIds: trade.openTradeIds,
+                              closeTradeIds: trade.closeTradeIds || [],
+                            } as any
+                          }
                           trigger={
                             <button className="underline decoration-dotted hover:decoration-solid text-blue-600 hover:text-blue-800">
                               {trade.roundId.slice(-8)}
