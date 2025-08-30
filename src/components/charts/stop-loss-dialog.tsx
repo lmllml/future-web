@@ -10,6 +10,9 @@ import {
 import { Button } from "@/components/ui/button";
 import { Loader2, TrendingDown, TrendingUp, Calculator } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
+// Worker 用于并行计算不同止损等级
+// @ts-ignore - bundled by Next/webpack
+import StopLossWorker from "@/workers/stop-loss-worker.ts?worker";
 
 interface KlineData {
   symbol: string;
