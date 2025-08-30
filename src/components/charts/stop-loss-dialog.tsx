@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo } from "react";
 import {
   Dialog,
   DialogContent,
@@ -8,7 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
-import { Loader2, TrendingDown, TrendingUp, Calculator } from "lucide-react";
+import { Loader2, TrendingDown, TrendingUp, Calculator, ArrowUp, ArrowDown, ChevronsUpDown } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
@@ -111,6 +111,8 @@ export function StopLossDialog({
   const [showTradeList, setShowTradeList] = useState(false);
   const [selectedTrades, setSelectedTrades] = useState<TradeDetail[]>([]);
   const [tradeListTitle, setTradeListTitle] = useState("");
+  const [sortKey, setSortKey] = useState<"pnl" | "original">("pnl");
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
 
   // 根据实际交易数据计算最佳止损点
   const calculateStopLoss = async () => {
@@ -972,8 +974,62 @@ export function StopLossDialog({
                     <th className="text-left p-2">最大浮亏%</th>
                     <th className="text-left p-2">是否止损</th>
                     <th className="text-left p-2">盈亏率%</th>
-                    <th className="text-left p-2">盈亏金额($)</th>
-                    <th className="text-left p-2">原盈亏金额($)</th>
+                    <th className="text-left p-2">
+                      <button
+                        className="inline-flex items-center gap-1 hover:text-blue-600"
+                        onClick={() => {
+                          if (sortKey === "pnl") setSortAsc(!sortAsc);
+                          else {
+                            setSortKey("pnl");
+                            setSortAsc(false);
+                          }
+                          setSelectedTrades((arr) =>
+                            [...arr].sort((a, b) =>
+                              (sortAsc ? a.pnlAmount - b.pnlAmount : b.pnlAmount - a.pnlAmount)
+                            )
+                          );
+                        }}
+                        title="按盈亏金额排序"
+                      >
+                        盈亏金额($)
+                        {sortKey !== "pnl" ? (
+                          <ChevronsUpDown className="w-3 h-3" />
+                        ) : sortAsc ? (
+                          <ArrowUp className="w-3 h-3" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3" />
+                        )}
+                      </button>
+                    </th>
+                    <th className="text-left p-2">
+                      <button
+                        className="inline-flex items-center gap-1 hover:text-blue-600"
+                        onClick={() => {
+                          if (sortKey === "original") setSortAsc(!sortAsc);
+                          else {
+                            setSortKey("original");
+                            setSortAsc(false);
+                          }
+                          setSelectedTrades((arr) =>
+                            [...arr].sort((a, b) =>
+                              (sortAsc
+                                ? a.originalPnlAmount - b.originalPnlAmount
+                                : b.originalPnlAmount - a.originalPnlAmount)
+                            )
+                          );
+                        }}
+                        title="按原盈亏金额排序"
+                      >
+                        原盈亏金额($)
+                        {sortKey !== "original" ? (
+                          <ChevronsUpDown className="w-3 h-3" />
+                        ) : sortAsc ? (
+                          <ArrowUp className="w-3 h-3" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3" />
+                        )}
+                      </button>
+                    </th>
                     <th className="text-left p-2">开仓时间</th>
                   </tr>
                 </thead>
