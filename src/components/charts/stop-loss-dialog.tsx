@@ -962,7 +962,7 @@ export function StopLossDialog({
                     <th className="text-left p-2">方向</th>
                     <th className="text-left p-2">入场价</th>
                     <th className="text-left p-2">原出场价</th>
-                    <th className="text-left p-2">实际出场价</th>
+                    <th className="text-left p-2">模拟出场价</th>
                     <th className="text-left p-2">数量</th>
                     <th className="text-left p-2">最大浮亏%</th>
                     <th className="text-left p-2">是否止损</th>
