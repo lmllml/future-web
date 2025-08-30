@@ -182,7 +182,7 @@ export function StopLossDialog({
             symbol: trade.symbol,
             exchange: (trade as any).exchange || "binance",
             market: "futures",
-            interval: "5m", // 使用 5m 降低数据量，性能更好
+            interval: "1m", // 恢复 1m 粒度确保极值与早停判定准确
             startTime: trade.openTime,
             endTime: trade.closeTime,
             order: "asc",
