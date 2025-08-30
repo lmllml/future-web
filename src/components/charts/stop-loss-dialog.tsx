@@ -157,7 +157,13 @@ export function StopLossDialog({
       const klineCache = new Map<string, KlineData[] | null>();
       const openTradesCache = new Map<
         string,
-        Array<{ price: number; quantity: number; timestamp: string; tradeId: string; orderId?: string }> | null
+        Array<{
+          price: number;
+          quantity: number;
+          timestamp: string;
+          tradeId: string;
+          orderId?: string;
+        }> | null
       >();
 
       async function getKlinesOnce(trade: {
@@ -196,7 +202,13 @@ export function StopLossDialog({
         market: string;
         openTradeIds?: string[];
       }): Promise<
-        Array<{ price: number; quantity: number; timestamp: string; tradeId: string; orderId?: string }>
+        Array<{
+          price: number;
+          quantity: number;
+          timestamp: string;
+          tradeId: string;
+          orderId?: string;
+        }>
       > {
         if (!trade.openTradeIds || trade.openTradeIds.length < 2) return [];
         if (openTradesCache.has(trade.roundId)) {
@@ -218,7 +230,8 @@ export function StopLossDialog({
             tradeIds: trade.openTradeIds.join(","),
           });
           const opens = (data || []).sort(
-            (a, b) => new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+            (a, b) =>
+              new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
           );
           openTradesCache.set(trade.roundId, opens);
           return opens;
@@ -227,6 +240,22 @@ export function StopLossDialog({
           return [];
         }
       }
+
+      // 预热所有回合的缓存，避免在第一个止损等级时串行请求
+      async function warmCaches() {
+        const concurrency = 10;
+        for (let i = 0; i < allTrades.length; i += concurrency) {
+          const batch = allTrades.slice(i, i + concurrency);
+          await Promise.all([
+            // 并发拉取每个回合的K线
+            ...batch.map((t) => getKlinesOnce(t as any)),
+            // 并发拉取每个回合的首两笔开仓成交
+            ...batch.map((t) => getFirstTwoOpensOnce(t as any)),
+          ]);
+        }
+      }
+
+      await warmCaches();
 
       // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上无止损对比）
       const stopLossLevels = [
