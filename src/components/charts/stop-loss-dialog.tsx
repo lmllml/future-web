@@ -18,6 +18,7 @@ import {
   ChevronsUpDown,
 } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
+import { KlineDialog } from "@/components/charts/kline-dialog";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
 import StopLossWorker from "@/workers/stop-loss-worker.ts?worker";
@@ -1013,7 +1014,8 @@ export function StopLossDialog({
                       <button
                         className="inline-flex items-center gap-1 hover:text-blue-600"
                         onClick={() => {
-                          const nextAsc = sortKey === "original" ? !sortAsc : false;
+                          const nextAsc =
+                            sortKey === "original" ? !sortAsc : false;
                           setSortKey("original");
                           setSortAsc(nextAsc);
                           setSelectedTrades((arr) =>
@@ -1047,7 +1049,29 @@ export function StopLossDialog({
                     >
                       <td className="p-2 text-center">{index + 1}</td>
                       <td className="p-2 font-mono text-xs">
-                        {trade.roundId.slice(-8)}
+                        <KlineDialog
+                          round={{
+                            roundId: trade.roundId,
+                            symbol,
+                            exchange: "binance",
+                            market: "futures",
+                            positionSide: trade.positionSide,
+                            totalQuantity: trade.quantity,
+                            avgEntryPrice: trade.entryPrice,
+                            avgExitPrice: trade.exitPrice,
+                            realizedPnl: trade.originalPnlAmount ?? trade.pnlAmount,
+                            totalFees: 0,
+                            openTime: trade.openTime,
+                            closeTime: trade.closeTime,
+                            openTradeIds: [],
+                            closeTradeIds: [],
+                          } as any}
+                          trigger={
+                            <button className="underline decoration-dotted hover:decoration-solid text-blue-600 hover:text-blue-800">
+                              {trade.roundId.slice(-8)}
+                            </button>
+                          }
+                        />
                       </td>
                       <td className="p-2">
                         <span
