@@ -57,6 +57,7 @@ interface TradeDetail {
   finalPrice: number;
   pnlAmount: number;
   pnlRate: number;
+  originalPnlAmount: number;
   wouldHitStopLoss: boolean;
   maxDrawdownRate: number;
   openTime: string;
@@ -339,6 +340,7 @@ export function StopLossDialog({
                       : entryPrice - exitPrice) /
                       entryPrice) *
                     100,
+                  originalPnlAmount: trade.realizedPnl,
                   wouldHitStopLoss: false,
                   maxDrawdownRate: 0,
                   openTime: trade.openTime,
@@ -434,6 +436,7 @@ export function StopLossDialog({
                         finalPrice: firstStopPrice,
                         pnlAmount: pnlAmountEarly,
                         pnlRate: pnlRateEarly,
+                        originalPnlAmount: trade.realizedPnl,
                         wouldHitStopLoss: true,
                         maxDrawdownRate: maxDd,
                         openTime: first.timestamp,
@@ -509,6 +512,7 @@ export function StopLossDialog({
                 finalPrice,
                 pnlAmount,
                 pnlRate,
+                originalPnlAmount: trade.realizedPnl,
                 wouldHitStopLoss,
                 maxDrawdownRate,
                 openTime: trade.openTime,
@@ -567,6 +571,7 @@ export function StopLossDialog({
                   ((isLong ? exitPrice - entryPrice : entryPrice - exitPrice) /
                     entryPrice) *
                   100,
+                originalPnlAmount: trade.realizedPnl,
                 wouldHitStopLoss: false,
                 maxDrawdownRate: 0,
                 openTime: trade.openTime,
@@ -968,6 +973,7 @@ export function StopLossDialog({
                     <th className="text-left p-2">是否止损</th>
                     <th className="text-left p-2">盈亏率%</th>
                     <th className="text-left p-2">盈亏金额($)</th>
+                    <th className="text-left p-2">原盈亏金额($)</th>
                     <th className="text-left p-2">开仓时间</th>
                   </tr>
                 </thead>
@@ -1052,6 +1058,18 @@ export function StopLossDialog({
                         >
                           {trade.pnlAmount > 0 ? "+" : ""}$
                           {trade.pnlAmount.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`font-semibold ${
+                            trade.originalPnlAmount > 0
+                              ? "text-green-600"
+                              : "text-red-600"
+                          }`}
+                        >
+                          {trade.originalPnlAmount > 0 ? "+" : ""}$
+                          {trade.originalPnlAmount.toFixed(2)}
                         </span>
                       </td>
                       <td className="p-2 text-xs text-muted-foreground">
