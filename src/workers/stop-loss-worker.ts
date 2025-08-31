@@ -117,7 +117,7 @@ function computeForLevel(
       }
 
       // stop loss triggered by overall max drawdown in period
-      if (m.maxDrawdownRate <= percentage) {
+      if (m.maxDrawdownRate !== undefined && m.maxDrawdownRate <= percentage) {
         const finalPrice = isLong
           ? entryPrice * (1 + percentage / 100)
           : entryPrice * (1 - percentage / 100);

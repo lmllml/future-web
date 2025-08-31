@@ -8,6 +8,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Button } from "@/components/ui/button";
+
 import {
   Loader2,
   TrendingDown,
@@ -16,12 +17,24 @@ import {
   ArrowUp,
   ArrowDown,
   ChevronsUpDown,
+  Target,
 } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
 import { KlineDialog } from "@/components/charts/kline-dialog";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
-import StopLossWorker from "@/workers/stop-loss-worker.ts?worker";
+// Web Worker 创建方法（Next 推荐方式）
+// 使用相对路径 + import.meta.url 以便打包
+function createStopLossWorker(): Worker {
+  return new Worker(
+    new URL("../../workers/stop-loss-worker.ts", import.meta.url),
+    { type: "module" }
+  );
+}
+import type {
+  PreparedMetric as WorkerPreparedMetric,
+  RiskLevelResult as WorkerRiskLevelResult,
+} from "@/workers/stop-loss-worker";
 
 interface KlineData {
   symbol: string;
@@ -54,6 +67,9 @@ interface Props {
   positionSide?: "LONG" | "SHORT" | "ALL";
   startTime?: string;
   endTime?: string;
+  // 止盈设置
+  takeProfitPercentage?: number;
+  enableTakeProfit?: boolean;
 }
 
 interface TradeDetail {
@@ -68,7 +84,13 @@ interface TradeDetail {
   pnlRate: number;
   originalPnlAmount: number;
   wouldHitStopLoss: boolean;
+  wouldHitTakeProfit: boolean;
   maxDrawdownRate: number;
+  maxProfitRate: number;
+  isUnfinished: boolean;
+  // 浮动盈亏（用于未平单列表，按最新一根K线close计算）
+  floatingRate?: number;
+  floatingAmount?: number;
   openTime: string;
   closeTime: string;
   openTradeIds: string[];
@@ -95,11 +117,16 @@ interface StopLossAnalysis {
     totalTrades: number;
     profitTrades: number;
     lossTrades: number;
+    breakEvenTrades: number; // 持平次数（盈亏为0）
     avgProfit: number;
     avgLoss: number;
     profitFactor: number;
+    takeProfitTrades: number; // 触发止盈的交易数
+    stopLossTrades: number; // 触发止损的交易数
+    normalExitTrades: number; // 正常出场的交易数
     profitTradeDetails: TradeDetail[];
     lossTradeDetails: TradeDetail[];
+    breakEvenTradeDetails: TradeDetail[];
   }>;
 }
 
@@ -114,6 +141,8 @@ export function StopLossDialog({
   positionSide,
   startTime,
   endTime,
+  takeProfitPercentage = 10,
+  enableTakeProfit = false,
 }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(true);
   const [analysis, setAnalysis] = useState<StopLossAnalysis | null>(null);
@@ -124,9 +153,16 @@ export function StopLossDialog({
   const [tradeListTitle, setTradeListTitle] = useState("");
   const [sortKey, setSortKey] = useState<"pnl" | "original">("pnl");
   const [sortAsc, setSortAsc] = useState<boolean>(false);
+  const [currentTakeProfitPercentage, setCurrentTakeProfitPercentage] =
+    useState(takeProfitPercentage);
+  const [currentEnableTakeProfit, setCurrentEnableTakeProfit] =
+    useState(enableTakeProfit);
 
   // 根据实际交易数据计算最佳止损点
-  const calculateStopLoss = async () => {
+  const calculateStopLoss = async (overrides?: {
+    enableTakeProfit?: boolean;
+    takeProfitPercentage?: number;
+  }) => {
     setLoading(true);
     setError(null);
 
@@ -259,6 +295,30 @@ export function StopLossDialog({
         }
       }
 
+      // 获取平仓时间之后最新一根1m K线的收盘价（用于未平单浮动盈亏）
+      async function getLatestCloseAfter(trade: {
+        symbol: string;
+        exchange: string;
+        market: string;
+        closeTime: string;
+      }): Promise<number | null> {
+        try {
+          const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange || "binance",
+            market: (trade as any).market || "futures",
+            interval: "1m",
+            startTime: trade.closeTime,
+            endTime: new Date().toISOString(),
+            order: "desc",
+          });
+          if (data && data.length > 0) return data[0].close;
+          return null;
+        } catch {
+          return null;
+        }
+      }
+
       // 预热所有回合的缓存，避免在第一个止损等级时串行请求
       async function warmCaches() {
         const concurrency = 10;
@@ -275,9 +335,9 @@ export function StopLossDialog({
 
       await warmCaches();
 
-      // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上无止损对比）
+      // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上真实订单对比）
       const stopLossLevels = [
-        -999, // 无止损（用-999表示永不触发）
+        -999, // 真实订单（用-999表示永不触发）
         -0.5,
         -1.0,
         -1.5,
@@ -301,17 +361,237 @@ export function StopLossDialog({
         -50.0,
       ];
 
+      // 当未启用止盈时，优先使用多 Worker 并行计算（显著提速）
+      const enableTPForRun =
+        overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+      if (!enableTPForRun && typeof window !== "undefined") {
+        // 1) 预处理每笔交易，计算一次性的指标，供 Worker 复用
+        async function prepareMetrics(): Promise<WorkerPreparedMetric[]> {
+          const concurrency = 10;
+          const metrics: WorkerPreparedMetric[] = [];
+          for (let i = 0; i < allTrades.length; i += concurrency) {
+            const batch = allTrades.slice(i, i + concurrency);
+            const results = await Promise.all(
+              batch.map(async (t) => {
+                const isLong = t.positionSide === "LONG";
+                const klines = await getKlinesOnce(t as any);
+                const entryPrice = t.avgEntryPrice;
+                const exitPrice = t.avgExitPrice;
+                const quantity = t.totalQuantity;
+
+                // 全周期最大回撤（负数）。若无K线，用0表示“不触发止损”。
+                let maxDrawdownRate = 0;
+                if (klines && klines.length > 0) {
+                  if (isLong) {
+                    let minLow = Infinity;
+                    for (const k of klines) minLow = Math.min(minLow, k.low);
+                    maxDrawdownRate =
+                      ((minLow - entryPrice) / entryPrice) * 100; // <= 0
+                  } else {
+                    let maxHigh = -Infinity;
+                    for (const k of klines) maxHigh = Math.max(maxHigh, k.high);
+                    maxDrawdownRate =
+                      -((maxHigh - entryPrice) / entryPrice) * 100; // <= 0
+                  }
+                }
+
+                // 两次开仓之间的早期回撤（负数），若无两次开仓或无K线则省略
+                let earlyFirstOpenPrice: number | undefined;
+                let earlyFirstOpenQty: number | undefined;
+                let earlyDrawdownRate: number | undefined;
+                if (
+                  klines &&
+                  klines.length > 0 &&
+                  t.openTradeIds &&
+                  t.openTradeIds.length >= 2
+                ) {
+                  try {
+                    const opens = await getFirstTwoOpensOnce(t as any);
+                    if (opens.length >= 2) {
+                      const first = opens[0];
+                      const second = opens[1];
+                      const start = new Date(first.timestamp).getTime();
+                      const end = new Date(second.timestamp).getTime();
+                      if (isLong) {
+                        let minLow = Infinity;
+                        for (const k of klines) {
+                          const time = new Date(k.closeTime).getTime();
+                          if (time >= start && time <= end)
+                            minLow = Math.min(minLow, k.low);
+                        }
+                        if (minLow !== Infinity)
+                          earlyDrawdownRate =
+                            ((minLow - first.price) / first.price) * 100; // <= 0
+                      } else {
+                        let maxHigh = -Infinity;
+                        for (const k of klines) {
+                          const time = new Date(k.closeTime).getTime();
+                          if (time >= start && time <= end)
+                            maxHigh = Math.max(maxHigh, k.high);
+                        }
+                        if (maxHigh !== -Infinity)
+                          earlyDrawdownRate =
+                            -((maxHigh - first.price) / first.price) * 100; // <= 0
+                      }
+                      earlyFirstOpenPrice = first.price;
+                      earlyFirstOpenQty = first.quantity as unknown as number;
+                    }
+                  } catch {}
+                }
+
+                const metric: WorkerPreparedMetric = {
+                  roundId: t.roundId,
+                  symbol: t.symbol,
+                  positionSide: t.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  realizedPnl: t.realizedPnl,
+                  openTime: t.openTime,
+                  closeTime: t.closeTime,
+                  maxDrawdownRate,
+                  earlyFirstOpenPrice,
+                  earlyFirstOpenQty,
+                  earlyDrawdownRate,
+                } as WorkerPreparedMetric;
+                return metric;
+              })
+            );
+            for (const r of results) if (r) metrics.push(r);
+          }
+          return metrics;
+        }
+
+        function runWithWorker(
+          worker: Worker,
+          msg: { percentage: number; trades: WorkerPreparedMetric[] }
+        ): Promise<WorkerRiskLevelResult> {
+          return new Promise((resolve) => {
+            const onMessage = (e: MessageEvent<WorkerRiskLevelResult>) => {
+              worker.removeEventListener("message", onMessage as any);
+              resolve(e.data);
+            };
+            worker.addEventListener("message", onMessage as any);
+            worker.postMessage(msg);
+          });
+        }
+
+        async function computeInPool(
+          metrics: WorkerPreparedMetric[]
+        ): Promise<WorkerRiskLevelResult[]> {
+          const levels = stopLossLevels.map((p) => (p === -999 ? 0 : p));
+          const results: WorkerRiskLevelResult[] = new Array(levels.length);
+          const poolSize = Math.max(
+            1,
+            Math.min(
+              levels.length,
+              (navigator as any)?.hardwareConcurrency || 4
+            )
+          );
+          let cursor = 0;
+          await Promise.all(
+            new Array(poolSize).fill(0).map(async () => {
+              const w = createStopLossWorker();
+              try {
+                while (cursor < levels.length) {
+                  const my = cursor++;
+                  const res = await runWithWorker(w, {
+                    percentage: levels[my],
+                    trades: metrics,
+                  });
+                  results[my] = res;
+                }
+              } finally {
+                w.terminate();
+              }
+            })
+          );
+          return results;
+        }
+
+        const metrics = await prepareMetrics();
+        const workerResults = await computeInPool(metrics);
+        const normalizeDetail = (d: any) => ({
+          ...d,
+          originalPnlAmount: d.originalPnlAmount ?? d.pnlAmount ?? 0,
+          wouldHitTakeProfit: d.wouldHitTakeProfit ?? false,
+          maxProfitRate: d.maxProfitRate ?? 0,
+          isUnfinished: d.isUnfinished ?? false,
+          floatingRate: d.floatingRate,
+          floatingAmount: d.floatingAmount,
+          openTradeIds: d.openTradeIds ?? [],
+          closeTradeIds: d.closeTradeIds ?? [],
+        });
+
+        const riskLevels = workerResults.map((r, idx) => {
+          const stopTrades =
+            [...r.profitTradeDetails, ...r.lossTradeDetails].filter(
+              (d) => d.wouldHitStopLoss
+            ).length || 0;
+          const totalTrades = r.totalTrades;
+          const normalExit = Math.max(totalTrades - stopTrades, 0);
+          return {
+            percentage: stopLossLevels[idx] === -999 ? 0 : stopLossLevels[idx],
+            totalProfit: r.totalProfit,
+            totalProfitAmount: r.totalProfitAmount,
+            totalLossAmount: r.totalLossAmount,
+            winRate: r.winRate,
+            totalTrades: r.totalTrades,
+            profitTrades: r.profitTrades,
+            lossTrades: r.lossTrades,
+            breakEvenTrades: 0,
+            avgProfit: r.avgProfit,
+            avgLoss: r.avgLoss,
+            profitFactor: r.profitFactor,
+            takeProfitTrades: 0,
+            stopLossTrades: stopTrades,
+            normalExitTrades: normalExit,
+            profitTradeDetails: r.profitTradeDetails.map(
+              normalizeDetail
+            ) as any,
+            lossTradeDetails: r.lossTradeDetails.map(normalizeDetail) as any,
+            breakEvenTradeDetails: [],
+          };
+        });
+
+        const bestLevel = riskLevels.reduce((a, b) =>
+          b.totalProfit > a.totalProfit ? b : a
+        );
+
+        setAnalysis({
+          optimalStopLoss: {
+            percentage: bestLevel.percentage,
+            totalProfit: bestLevel.totalProfit,
+            totalProfitAmount: bestLevel.totalProfitAmount,
+            totalLossAmount: bestLevel.totalLossAmount,
+            winRate: bestLevel.winRate,
+            avgProfit: bestLevel.avgProfit,
+            avgLoss: bestLevel.avgLoss,
+            profitFactor: bestLevel.profitFactor,
+          },
+          riskLevels,
+        });
+        setLoading(false);
+        return; // 已完成：多 Worker 分支
+      }
+
       // 为了提高性能，我们将并发处理止损计算（并使用缓存避免重复请求）
       const riskLevels = await Promise.all(
         stopLossLevels.map(async (stopLossPercentage) => {
+          const isRealOrderRow = stopLossPercentage === -999;
           let totalTrades = 0;
           let profitTrades = 0;
           let lossTrades = 0;
+          let breakEvenTrades = 0;
           let totalProfitAmount = 0;
           let totalLossAmount = 0;
           let totalNetProfit = 0;
+          let takeProfitTrades = 0;
+          let stopLossTrades = 0;
+          let normalExitTrades = 0;
           const profitTradeDetails: TradeDetail[] = [];
           const lossTradeDetails: TradeDetail[] = [];
+          const breakEvenTradeDetails: TradeDetail[] = [];
 
           // 处理全部筛选到的交易；如需提速可按需限制数量
           const tradesToProcess = allTrades;
@@ -332,13 +612,78 @@ export function StopLossDialog({
               const klines = await getKlinesOnce(trade as any);
 
               if (!klines || klines.length === 0) {
-                // 如果没有K线数据，使用原始交易结果作为回退，并同时补充详情，避免计数与列表不一致
+                // 如果没有K线数据，使用原始交易结果作为回退，并同时补充详情
                 const entryPrice = trade.avgEntryPrice;
                 const exitPrice = trade.avgExitPrice;
                 const quantity = trade.totalQuantity;
                 const pnlAmount = trade.realizedPnl;
+                // 若启用止盈：忽略真实平单，不计入盈利/亏损/总交易
+                const enableTPHere =
+                  overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                if (!isRealOrderRow && enableTPHere) {
+                  normalExitTrades++;
+                  // 计算基于“最新一根K线”的浮动盈亏
+                  let floatingRate: number | undefined;
+                  let floatingAmount: number | undefined;
+                  const latest = await getLatestCloseAfter(trade as any);
+                  if (latest !== null) {
+                    const posValue = entryPrice * quantity;
+                    floatingRate = isLong
+                      ? ((latest - entryPrice) / entryPrice) * 100
+                      : ((entryPrice - latest) / entryPrice) * 100;
+                    floatingAmount = (floatingRate / 100) * posValue;
+                  }
+                  const ignoredDetail: TradeDetail = {
+                    roundId: trade.roundId,
+                    symbol: trade.symbol,
+                    positionSide: trade.positionSide,
+                    entryPrice,
+                    exitPrice,
+                    quantity,
+                    finalPrice: exitPrice,
+                    pnlAmount,
+                    pnlRate:
+                      ((isLong
+                        ? exitPrice - entryPrice
+                        : entryPrice - exitPrice) /
+                        entryPrice) *
+                      100,
+                    originalPnlAmount: trade.realizedPnl,
+                    wouldHitStopLoss: false,
+                    wouldHitTakeProfit: false,
+                    maxDrawdownRate: 0,
+                    maxProfitRate: 0,
+                    isUnfinished: true,
+                    floatingRate,
+                    floatingAmount,
+                    openTime: trade.openTime,
+                    closeTime: trade.closeTime,
+                    openTradeIds: trade.openTradeIds || [],
+                    closeTradeIds: trade.closeTradeIds || [],
+                  };
+                  breakEvenTrades++;
+                  breakEvenTradeDetails.push(ignoredDetail);
+                  continue;
+                }
+
                 totalTrades++;
                 totalNetProfit += pnlAmount;
+                if (!isRealOrderRow) {
+                  normalExitTrades++; // 仅策略行计入正常出场
+                }
+                // 计算基于“最新一根K线”的浮动盈亏（即使无K线也尝试用最新价估算）
+                let floatingRate2: number | undefined;
+                let floatingAmount2: number | undefined;
+                try {
+                  const latest2 = await getLatestCloseAfter(trade as any);
+                  if (latest2 !== null) {
+                    const posValue2 = entryPrice * quantity;
+                    floatingRate2 = isLong
+                      ? ((latest2 - entryPrice) / entryPrice) * 100
+                      : ((entryPrice - latest2) / entryPrice) * 100;
+                    floatingAmount2 = (floatingRate2 / 100) * posValue2;
+                  }
+                } catch {}
                 const detail: TradeDetail = {
                   roundId: trade.roundId,
                   symbol: trade.symbol,
@@ -356,12 +701,32 @@ export function StopLossDialog({
                     100,
                   originalPnlAmount: trade.realizedPnl,
                   wouldHitStopLoss: false,
+                  wouldHitTakeProfit: false,
                   maxDrawdownRate: 0,
+                  maxProfitRate: 0,
+                  // 新定义：
+                  // 未启用止盈：未真实平单且未止损（此分支无K线，无法判断止损，仅按是否有真实平单近似）
+                  // 启用止盈的情形已在上方被忽略并计入未平单
+                  isUnfinished: (() => {
+                    const hasRealExitLocal = !!exitPrice && !!trade.closeTime;
+                    return (
+                      !isRealOrderRow && !enableTPHere && !hasRealExitLocal
+                    );
+                  })(),
+                  floatingRate: floatingRate2,
+                  floatingAmount: floatingAmount2,
                   openTime: trade.openTime,
                   closeTime: trade.closeTime,
                   openTradeIds: trade.openTradeIds || [],
                   closeTradeIds: trade.closeTradeIds || [],
                 };
+                // 按新定义累计未平单
+                const hasRealExit = !!exitPrice && !!trade.closeTime;
+                if (!isRealOrderRow && !enableTPHere && !hasRealExit) {
+                  breakEvenTrades++;
+                  breakEvenTradeDetails.push(detail);
+                }
+                // 分类：盈利/亏损（持平不再重复计入未平单数）
                 if (pnlAmount > 0) {
                   profitTrades++;
                   totalProfitAmount += pnlAmount;
@@ -375,7 +740,11 @@ export function StopLossDialog({
               }
 
               // 若有多次开仓：如果第一笔开仓在第二笔开仓前已触发止损，则直接止损退出
-              if (trade.openTradeIds && trade.openTradeIds.length >= 2) {
+              if (
+                !isRealOrderRow &&
+                trade.openTradeIds &&
+                trade.openTradeIds.length >= 2
+              ) {
                 try {
                   const openTrades = await getFirstTwoOpensOnce(trade as any);
 
@@ -389,10 +758,24 @@ export function StopLossDialog({
                       second.timestamp
                     ).toISOString();
 
-                    // 在第一笔到第二笔之间检查是否达到止损价
+                    // 在第一笔到第二笔之间按时间顺序检查是否先达到止盈或止损
                     const firstStopPrice = isLong
                       ? first.price * (1 + stopLossPercentage / 100)
                       : first.price * (1 - stopLossPercentage / 100);
+                    const firstTakeProfitPrice =
+                      overrides?.enableTakeProfit ?? currentEnableTakeProfit
+                        ? isLong
+                          ? first.price *
+                            ((overrides?.takeProfitPercentage ??
+                              currentTakeProfitPercentage) /
+                              100 +
+                              1)
+                          : first.price *
+                            (1 -
+                              (overrides?.takeProfitPercentage ??
+                                currentTakeProfitPercentage) /
+                                100)
+                        : null;
 
                     const betweenK = klines.filter(
                       (k) =>
@@ -400,46 +783,84 @@ export function StopLossDialog({
                         k.closeTime <= secondOpenTime
                     );
 
-                    let earlyHit = false;
+                    let earlyStopLoss = false;
+                    let earlyTakeProfit = false;
                     if (betweenK.length > 0) {
-                      if (isLong) {
-                        const minLow = Math.min(...betweenK.map((k) => k.low));
-                        earlyHit = minLow <= firstStopPrice;
-                      } else {
-                        const maxHigh = Math.max(
-                          ...betweenK.map((k) => k.high)
-                        );
-                        earlyHit = maxHigh >= firstStopPrice;
+                      for (const k of betweenK) {
+                        // 避免在包含第二次开仓时刻的最后一根K线上误判（该K线内可能先发生第二次开仓）
+                        if (k.closeTime === secondOpenTime) {
+                          break;
+                        }
+                        // 先检查止盈
+                        if (firstTakeProfitPrice !== null) {
+                          if (isLong) {
+                            if (k.high >= firstTakeProfitPrice) {
+                              earlyTakeProfit = true;
+                              break;
+                            }
+                          } else {
+                            if (k.low <= firstTakeProfitPrice) {
+                              earlyTakeProfit = true;
+                              break;
+                            }
+                          }
+                        }
+                        // 再检查止损
+                        if (isLong) {
+                          if (k.low <= firstStopPrice) {
+                            earlyStopLoss = true;
+                            break;
+                          }
+                        } else {
+                          if (k.high >= firstStopPrice) {
+                            earlyStopLoss = true;
+                            break;
+                          }
+                        }
                       }
                     }
 
-                    if (earlyHit) {
-                      // 以第一笔开仓的数量与价格，在止损价退出，不再有后续开单
+                    if (earlyTakeProfit || earlyStopLoss) {
                       const posValue = first.price * first.quantity;
+                      const exitAt = earlyTakeProfit
+                        ? (firstTakeProfitPrice as number)
+                        : firstStopPrice;
                       const pnlRateEarly = isLong
-                        ? ((firstStopPrice - first.price) / first.price) * 100
-                        : ((first.price - firstStopPrice) / first.price) * 100;
+                        ? ((exitAt - first.price) / first.price) * 100
+                        : ((first.price - exitAt) / first.price) * 100;
                       const pnlAmountEarly = (pnlRateEarly / 100) * posValue;
 
                       totalTrades++;
                       totalNetProfit += pnlAmountEarly;
+                      if (earlyTakeProfit) {
+                        takeProfitTrades++;
+                      } else {
+                        stopLossTrades++;
+                      }
 
-                      // 估算最大浮亏用于展示；若无法计算则用阈值替代
-                      let maxDd: number;
+                      // 估算最大浮盈/浮亏用于展示
+                      let maxDd = 0;
+                      let maxPr = 0;
                       if (betweenK.length > 0) {
                         if (isLong) {
                           const minLow = Math.min(
                             ...betweenK.map((k) => k.low)
                           );
+                          const maxHigh = Math.max(
+                            ...betweenK.map((k) => k.high)
+                          );
                           maxDd = ((minLow - first.price) / first.price) * 100;
+                          maxPr = ((maxHigh - first.price) / first.price) * 100;
                         } else {
                           const maxHigh = Math.max(
                             ...betweenK.map((k) => k.high)
                           );
+                          const minLow = Math.min(
+                            ...betweenK.map((k) => k.low)
+                          );
                           maxDd = ((first.price - maxHigh) / first.price) * 100;
+                          maxPr = ((first.price - minLow) / first.price) * 100;
                         }
-                      } else {
-                        maxDd = stopLossPercentage; // 至少达到止损阈值
                       }
 
                       const detail: TradeDetail = {
@@ -449,12 +870,15 @@ export function StopLossDialog({
                         entryPrice: first.price,
                         exitPrice: trade.avgExitPrice,
                         quantity: first.quantity,
-                        finalPrice: firstStopPrice,
+                        finalPrice: exitAt,
                         pnlAmount: pnlAmountEarly,
                         pnlRate: pnlRateEarly,
                         originalPnlAmount: trade.realizedPnl,
-                        wouldHitStopLoss: true,
+                        wouldHitStopLoss: earlyStopLoss,
+                        wouldHitTakeProfit: earlyTakeProfit,
                         maxDrawdownRate: maxDd,
+                        maxProfitRate: maxPr,
+                        isUnfinished: false,
                         openTime: first.timestamp,
                         closeTime: trade.closeTime,
                         openTradeIds: trade.openTradeIds || [],
@@ -481,31 +905,93 @@ export function StopLossDialog({
                 }
               }
 
-              // 计算最大浮亏率
+              // 计算最大浮亏率和最大浮盈率
               let maxDrawdownRate = 0;
+              let maxProfitRate = 0;
               if (isLong) {
-                // 多头：找交易期间的最低价
+                // 多头：找交易期间的最低价和最高价
                 const lowestPrice = Math.min(...klines.map((k) => k.low));
-                maxDrawdownRate =
-                  ((lowestPrice - entryPrice) / entryPrice) * 100;
-              } else {
-                // 空头：找交易期间的最高价
                 const highestPrice = Math.max(...klines.map((k) => k.high));
                 maxDrawdownRate =
+                  ((lowestPrice - entryPrice) / entryPrice) * 100;
+                maxProfitRate =
+                  ((highestPrice - entryPrice) / entryPrice) * 100;
+              } else {
+                // 空头：找交易期间的最高价和最低价
+                const highestPrice = Math.max(...klines.map((k) => k.high));
+                const lowestPrice = Math.min(...klines.map((k) => k.low));
+                maxDrawdownRate =
                   ((entryPrice - highestPrice) / entryPrice) * 100;
+                maxProfitRate = ((entryPrice - lowestPrice) / entryPrice) * 100;
               }
 
-              // 判断是否会触发止损
+              // 判断是否会触发止损或止盈（按时间顺序检查）
               let finalPrice = exitPrice;
               let wouldHitStopLoss = false;
+              let wouldHitTakeProfit = false;
 
-              // 关键逻辑：如果最大浮亏超过止损设置，则在止损价出场
-              if (maxDrawdownRate <= stopLossPercentage) {
-                wouldHitStopLoss = true;
-                // 计算止损价
-                finalPrice = isLong
+              if (!isRealOrderRow) {
+                // 计算止盈价和止损价（支持 overrides）
+                const enableTP =
+                  overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                const tpPct =
+                  overrides?.takeProfitPercentage ??
+                  currentTakeProfitPercentage;
+                const takeProfitPrice = enableTP
+                  ? isLong
+                    ? entryPrice * (1 + tpPct / 100)
+                    : entryPrice * (1 - tpPct / 100)
+                  : null;
+
+                const stopLossPrice = isLong
                   ? entryPrice * (1 + stopLossPercentage / 100)
                   : entryPrice * (1 - stopLossPercentage / 100);
+
+                // 按时间顺序检查每个K线，看哪个条件先触发
+                let hitCondition = false;
+                for (const kline of klines) {
+                  // 避免在包含原计划平仓时刻的最后一根K线上误判（最后一根K线可能在真实平仓后仍有波动）
+                  if (kline.closeTime === trade.closeTime) {
+                    break;
+                  }
+                  if (hitCondition) break;
+
+                  // 检查止盈触发（优先级更高）
+                  if (takeProfitPrice !== null) {
+                    if (isLong) {
+                      if (kline.high >= takeProfitPrice) {
+                        wouldHitTakeProfit = true;
+                        finalPrice = takeProfitPrice;
+                        hitCondition = true;
+                        break;
+                      }
+                    } else {
+                      if (kline.low <= takeProfitPrice) {
+                        wouldHitTakeProfit = true;
+                        finalPrice = takeProfitPrice;
+                        hitCondition = true;
+                        break;
+                      }
+                    }
+                  }
+
+                  // 检查止损触发
+                  if (isLong) {
+                    if (kline.low <= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      hitCondition = true;
+                      break;
+                    }
+                  } else {
+                    if (kline.high >= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      hitCondition = true;
+                      break;
+                    }
+                  }
+                }
               }
 
               // 计算在该止损条件下的盈亏率
@@ -517,8 +1003,69 @@ export function StopLossDialog({
               const positionValue = entryPrice * quantity;
               const pnlAmount = (pnlRate / 100) * positionValue;
 
+              // 计算“现实世界最新一根1m K线”的浮动盈亏（用于未平单列表，始终使用最新价）
+              let latestFloatingRate: number | undefined;
+              let latestFloatingAmount: number | undefined;
+              if (klines && klines.length > 0) {
+                let lastClose = klines[klines.length - 1].close;
+                const newest = await getLatestCloseAfter(trade as any);
+                if (newest !== null) lastClose = newest;
+                latestFloatingRate = isLong
+                  ? ((lastClose - entryPrice) / entryPrice) * 100
+                  : ((entryPrice - lastClose) / entryPrice) * 100;
+                latestFloatingAmount =
+                  (latestFloatingRate / 100) * positionValue;
+              }
+
+              // 若启用止盈且未触发止盈/止损：忽略真实平单，不计入盈利/亏损/总交易
+              const enableTPNow =
+                overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+              if (
+                !isRealOrderRow &&
+                enableTPNow &&
+                !wouldHitTakeProfit &&
+                !wouldHitStopLoss
+              ) {
+                normalExitTrades++;
+                const ignoredDetail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice,
+                  pnlAmount,
+                  pnlRate,
+                  originalPnlAmount: trade.realizedPnl,
+                  wouldHitStopLoss,
+                  wouldHitTakeProfit,
+                  maxDrawdownRate,
+                  maxProfitRate,
+                  isUnfinished: true,
+                  floatingRate: latestFloatingRate,
+                  floatingAmount: latestFloatingAmount,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
+                };
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(ignoredDetail);
+                continue;
+              }
+
               totalTrades++;
               totalNetProfit += pnlAmount;
+
+              // 统计不同出场方式
+              if (wouldHitTakeProfit) {
+                takeProfitTrades++;
+              } else if (wouldHitStopLoss) {
+                stopLossTrades++;
+              } else {
+                if (!isRealOrderRow) normalExitTrades++;
+              }
 
               const tradeDetail: TradeDetail = {
                 roundId: trade.roundId,
@@ -532,13 +1079,32 @@ export function StopLossDialog({
                 pnlRate,
                 originalPnlAmount: trade.realizedPnl,
                 wouldHitStopLoss,
+                wouldHitTakeProfit,
                 maxDrawdownRate,
+                maxProfitRate,
+                // 新定义：
+                // - 未启用止盈：未真实平单且未止损
+                // - 启用止盈：未止盈且未止损
+                isUnfinished: (() => {
+                  const enableTPNowLocal =
+                    overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                  if (enableTPNowLocal)
+                    return !wouldHitTakeProfit && !wouldHitStopLoss;
+                  const hasRealExitLocal = !!exitPrice && !!trade.closeTime;
+                  return !hasRealExitLocal && !wouldHitStopLoss;
+                })(),
+                floatingRate: latestFloatingRate,
+                floatingAmount: latestFloatingAmount,
                 openTime: trade.openTime,
                 closeTime: trade.closeTime,
                 openTradeIds: trade.openTradeIds || [],
-                                              closeTradeIds: trade.closeTradeIds || [],
+                closeTradeIds: trade.closeTradeIds || [],
               };
-
+              // 按新定义累计未平单（仅策略行）
+              if (!isRealOrderRow && tradeDetail.isUnfinished) {
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(tradeDetail);
+              }
               if (pnlAmount > 0) {
                 profitTrades++;
                 totalProfitAmount += pnlAmount;
@@ -570,13 +1136,50 @@ export function StopLossDialog({
               }
             } catch (error) {
               console.error(`获取交易 ${trade.roundId} 的K线数据失败:`, error);
-              // 如果K线数据获取失败，使用原始交易结果，并补充详情，避免计数与列表不一致
+              // 如果K线数据获取失败，使用原始交易结果，并补充详情
               const entryPrice = trade.avgEntryPrice;
               const exitPrice = trade.avgExitPrice;
               const quantity = trade.totalQuantity;
               const pnlAmount = trade.realizedPnl;
+              // 若启用止盈：忽略真实平单，不计入盈利/亏损/总交易
+              const enableTPHere2 =
+                overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+              if (!isRealOrderRow && enableTPHere2) {
+                normalExitTrades++;
+                const ignoredDetail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice: exitPrice,
+                  pnlAmount,
+                  pnlRate:
+                    ((isLong
+                      ? exitPrice - entryPrice
+                      : entryPrice - exitPrice) /
+                      entryPrice) *
+                    100,
+                  originalPnlAmount: trade.realizedPnl,
+                  wouldHitStopLoss: false,
+                  wouldHitTakeProfit: false,
+                  maxDrawdownRate: 0,
+                  maxProfitRate: 0,
+                  isUnfinished: true,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
+                };
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(ignoredDetail);
+                continue;
+              }
+
               totalTrades++;
               totalNetProfit += pnlAmount;
+              if (!isRealOrderRow) normalExitTrades++; // K线获取失败时按正常出场处理
 
               const detail: TradeDetail = {
                 roundId: trade.roundId,
@@ -593,13 +1196,29 @@ export function StopLossDialog({
                   100,
                 originalPnlAmount: trade.realizedPnl,
                 wouldHitStopLoss: false,
+                wouldHitTakeProfit: false,
                 maxDrawdownRate: 0,
+                maxProfitRate: 0,
+                // 新定义：未启用止盈：未真实平单且未止损（异常回退无法判断止损，按是否有真实平单近似）
+                // 启用止盈的情形已在上方被忽略并计入未平单
+                isUnfinished: (() => {
+                  const hasRealExitLocal2 = !!exitPrice && !!trade.closeTime;
+                  return (
+                    !isRealOrderRow && !enableTPHere2 && !hasRealExitLocal2
+                  );
+                })(),
                 openTime: trade.openTime,
                 closeTime: trade.closeTime,
                 openTradeIds: trade.openTradeIds || [],
-                                              closeTradeIds: trade.closeTradeIds || [],
+                closeTradeIds: trade.closeTradeIds || [],
               };
-
+              // 按新定义累计未平单
+              const hasRealExit3 = !!exitPrice && !!trade.closeTime;
+              if (!isRealOrderRow && !enableTPHere2 && !hasRealExit3) {
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(detail);
+              }
+              // 分类：盈利/亏损（持平不再重复计入未平单数）
               if (pnlAmount > 0) {
                 profitTrades++;
                 totalProfitAmount += pnlAmount;
@@ -620,7 +1239,7 @@ export function StopLossDialog({
           const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
 
           return {
-            percentage: stopLossPercentage === -999 ? 0 : stopLossPercentage, // 显示为"无止损"
+            percentage: stopLossPercentage === -999 ? 0 : stopLossPercentage, // 显示为"真实订单"
             totalProfit: Number(totalNetProfit.toFixed(2)),
             totalProfitAmount: Number(totalProfitAmount.toFixed(2)),
             totalLossAmount: Number(totalLossAmount.toFixed(2)),
@@ -628,11 +1247,16 @@ export function StopLossDialog({
             totalTrades,
             profitTrades,
             lossTrades,
+            breakEvenTrades,
             avgProfit: Number(avgProfit.toFixed(2)),
             avgLoss: Number(avgLoss.toFixed(2)),
             profitFactor: Number(profitFactor.toFixed(2)),
+            takeProfitTrades,
+            stopLossTrades,
+            normalExitTrades,
             profitTradeDetails,
             lossTradeDetails,
+            breakEvenTradeDetails,
           };
         })
       );
@@ -701,6 +1325,88 @@ export function StopLossDialog({
                 {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
                 重新计算
               </Button>
+            </div>
+          </div>
+
+          {/* 止盈设置 */}
+          <div className="flex items-center gap-4 mt-4 p-4 bg-muted/30 rounded-lg">
+            <div className="flex items-center gap-2">
+              <Target className="w-4 h-4 text-green-500" />
+              <label
+                htmlFor="enable-take-profit"
+                className="text-sm font-medium"
+              >
+                启用止盈
+              </label>
+              <input
+                id="enable-take-profit"
+                type="checkbox"
+                checked={currentEnableTakeProfit}
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setCurrentEnableTakeProfit(e.target.checked);
+                  setAnalysis(null);
+                  // 立即使用 overrides 重新计算，避免状态时序
+                  calculateStopLoss({
+                    enableTakeProfit: e.target.checked,
+                    takeProfitPercentage: currentTakeProfitPercentage,
+                  });
+                }}
+                className="w-4 h-4"
+              />
+            </div>
+
+            {currentEnableTakeProfit && (
+              <div className="flex items-center gap-2">
+                <label htmlFor="take-profit-percentage" className="text-sm">
+                  止盈百分比:
+                </label>
+                <input
+                  id="take-profit-percentage"
+                  type="number"
+                  value={currentTakeProfitPercentage}
+                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                    const value = parseFloat(e.target.value) || 0;
+                    setCurrentTakeProfitPercentage(value);
+                    setAnalysis(null);
+                    // 输入时不触发重算，避免频繁；在失焦时触发
+                  }}
+                  className="w-20 h-8 text-sm px-2 border border-gray-300 rounded"
+                  min="0.1"
+                  max="100"
+                  step="0.1"
+                />
+                <button
+                  className="text-xs ml-2 px-2 py-1 border rounded hover:bg-muted"
+                  onClick={() => {
+                    // 点击小按钮立即重算（也可换成 onBlur）
+                    calculateStopLoss({
+                      enableTakeProfit: currentEnableTakeProfit,
+                      takeProfitPercentage: currentTakeProfitPercentage,
+                    });
+                  }}
+                >
+                  应用
+                </button>
+                <span className="text-sm text-muted-foreground">%</span>
+              </div>
+            )}
+
+            <div className="text-xs text-muted-foreground space-y-1">
+              <div>
+                {currentEnableTakeProfit
+                  ? `当浮盈达到 ${currentTakeProfitPercentage}% 时自动止盈`
+                  : "未启用止盈，将按原计划出场"}
+              </div>
+              {currentEnableTakeProfit && (
+                <div className="text-blue-600 font-medium">
+                  示例：入场价 $100，止盈 {currentTakeProfitPercentage}% →{" "}
+                  多单在 $
+                  {(100 * (1 + currentTakeProfitPercentage / 100)).toFixed(2)}{" "}
+                  止盈， 空单在 $
+                  {(100 * (1 - currentTakeProfitPercentage / 100)).toFixed(2)}{" "}
+                  止盈
+                </div>
+              )}
             </div>
           </div>
         </DialogHeader>
@@ -807,9 +1513,13 @@ export function StopLossDialog({
                         <th className="text-left p-2">总交易</th>
                         <th className="text-left p-2">盈利次数</th>
                         <th className="text-left p-2">亏损次数</th>
+                        <th className="text-left p-2">未平单数</th>
                         <th className="text-left p-2">平均盈利($)</th>
                         <th className="text-left p-2">平均亏损($)</th>
                         <th className="text-left p-2">盈亏比</th>
+                        <th className="text-left p-2">止盈次数</th>
+                        <th className="text-left p-2">止损次数</th>
+                        <th className="text-left p-2">正常出场</th>
                         <th className="text-left p-2">盈利总额($)</th>
                         <th className="text-left p-2">亏损总额($)</th>
                       </tr>
@@ -829,7 +1539,7 @@ export function StopLossDialog({
                         >
                           <td className="p-2 font-medium">
                             {level.percentage === 0
-                              ? "无止损"
+                              ? "真实订单"
                               : `${level.percentage}%`}
                           </td>
                           <td className="p-2">
@@ -867,7 +1577,7 @@ export function StopLossDialog({
                                 setTradeListTitle(
                                   `${
                                     level.percentage === 0
-                                      ? "无止损"
+                                      ? "真实订单"
                                       : `${level.percentage}%止损`
                                   } - 盈利交易 (${level.profitTrades}笔)`
                                 );
@@ -885,7 +1595,7 @@ export function StopLossDialog({
                                 setTradeListTitle(
                                   `${
                                     level.percentage === 0
-                                      ? "无止损"
+                                      ? "真实订单"
                                       : `${level.percentage}%止损`
                                   } - 亏损交易 (${level.lossTrades}笔)`
                                 );
@@ -893,6 +1603,24 @@ export function StopLossDialog({
                               }}
                             >
                               {level.lossTrades}
+                            </button>
+                          </td>
+                          <td className="p-2">
+                            <button
+                              className="text-blue-600 hover:text-blue-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-blue-50 transition-all"
+                              onClick={() => {
+                                setSelectedTrades(level.breakEvenTradeDetails);
+                                setTradeListTitle(
+                                  `${
+                                    level.percentage === 0
+                                      ? "真实订单"
+                                      : `${level.percentage}%止损`
+                                  } - 未平单 (${level.breakEvenTrades}笔)`
+                                );
+                                setShowTradeList(true);
+                              }}
+                            >
+                              {level.breakEvenTrades}
                             </button>
                           </td>
                           <td className="p-2 text-green-600">
@@ -912,6 +1640,21 @@ export function StopLossDialog({
                               }`}
                             >
                               {level.profitFactor}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            <span className="text-green-600 font-medium">
+                              {level.takeProfitTrades}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            <span className="text-red-600 font-medium">
+                              {level.stopLossTrades}
+                            </span>
+                          </td>
+                          <td className="p-2">
+                            <span className="text-gray-600 font-medium">
+                              {level.normalExitTrades}
                             </span>
                           </td>
                           <td className="p-2 text-green-600">
@@ -943,30 +1686,62 @@ export function StopLossDialog({
                   </li>
                   <li>
                     • <strong>计算方法</strong>
-                    ：基于5分钟K线数据计算最大浮亏，精确判断止损触发
+                    ：基于1分钟K线数据按时间顺序精确判断止盈止损触发
                   </li>
                   <li>
                     • <strong>止损逻辑</strong>
                     ：当浮亏超过设定值时在止损价出场，否则按原计划出场
                   </li>
+                  <li>
+                    • <strong>止盈逻辑</strong>
+                    ：当启用止盈且浮盈达到设定值时在止盈价出场，优先级高于止损
+                  </li>
+                  <li>
+                    • <strong>触发优先级</strong>
+                    ：按K线时间顺序检查，止盈条件先满足则止盈，否则检查止损
+                  </li>
                   <li>• 蓝色高亮行为推荐的最佳止损点</li>
-                  <li>• 现已分析全部筛选交易；如性能受限可改为采样分析</li>
+                  <li>
+                    •
+                    表格中"止盈次数"、"止损次数"、"正常出场"显示不同出场方式的统计
+                  </li>
                 </ul>
               </div>
 
               {/* 使用建议 */}
               <div className="bg-yellow-50 dark:bg-yellow-950/20 rounded-lg p-4">
                 <h4 className="font-medium mb-2 text-yellow-800 dark:text-yellow-200">
-                  使用建议
+                  止盈功能使用指南
                 </h4>
-                <ul className="text-sm text-yellow-700 dark:text-yellow-300 space-y-1">
-                  <li>
-                    • 推荐的止损点基于历史数据计算，实际使用时应结合市场环境调整
-                  </li>
-                  <li>• 止损过紧可能导致过早离场，止损过宽可能增加单笔亏损</li>
-                  <li>• 建议结合技术分析和支撑阻力位设置止损点</li>
-                  <li>• 定期回测和调整止损策略以适应市场变化</li>
-                </ul>
+                <div className="text-sm text-yellow-700 dark:text-yellow-300 space-y-2">
+                  <div>
+                    <strong>📈 如何使用止盈：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 勾选"启用止盈"复选框</li>
+                      <li>• 设置止盈百分比（如：5% 表示盈利5%时自动出场）</li>
+                      <li>• 点击"重新计算"查看加入止盈后的分析结果</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <strong>🎯 止盈设置建议：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 保守型：3-5%（适合震荡市场）</li>
+                      <li>• 平衡型：5-10%（适合趋势明确时）</li>
+                      <li>• 激进型：10-20%（适合强趋势市场）</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <strong>⚠️ 注意事项：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 止盈过低可能错失更大收益，过高可能回撤较大</li>
+                      <li>• 止盈优先级高于止损，先达到止盈条件会优先执行</li>
+                      <li>• 建议结合技术分析设置止盈位（如阻力位附近）</li>
+                      <li>• 定期回测调整止盈策略以适应市场变化</li>
+                    </ul>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -989,11 +1764,19 @@ export function StopLossDialog({
                     <th className="text-left p-2">方向</th>
                     <th className="text-left p-2">入场价</th>
                     <th className="text-left p-2">原出场价</th>
-                    <th className="text-left p-2">出场价</th>
+                    {!tradeListTitle.includes("未平单") && (
+                      <th className="text-left p-2">出场价</th>
+                    )}
                     <th className="text-left p-2">数量</th>
                     <th className="text-left p-2">最大浮亏%</th>
+                    <th className="text-left p-2">最大浮盈%</th>
                     <th className="text-left p-2">是否止损</th>
-                    <th className="text-left p-2">盈亏率%</th>
+                    <th className="text-left p-2">是否止盈</th>
+                    <th className="text-left p-2">
+                      {tradeListTitle.includes("未平单")
+                        ? "浮盈亏率%"
+                        : "盈亏率%"}
+                    </th>
                     <th className="text-left p-2">
                       <button
                         className="inline-flex items-center gap-1 hover:text-blue-600"
@@ -1001,17 +1784,25 @@ export function StopLossDialog({
                           const nextAsc = sortKey === "pnl" ? !sortAsc : false;
                           setSortKey("pnl");
                           setSortAsc(nextAsc);
-                          setSelectedTrades((arr) =>
-                            [...arr].sort((a, b) =>
+                          setSelectedTrades((arr) => {
+                            const isBreakEvenList =
+                              tradeListTitle.includes("未平单");
+                            const amountOf = (t: TradeDetail) => {
+                              if (!isBreakEvenList) return t.pnlAmount;
+                              return t.floatingAmount ?? 0;
+                            };
+                            return [...arr].sort((a, b) =>
                               nextAsc
-                                ? a.pnlAmount - b.pnlAmount
-                                : b.pnlAmount - a.pnlAmount
-                            )
-                          );
+                                ? amountOf(a) - amountOf(b)
+                                : amountOf(b) - amountOf(a)
+                            );
+                          });
                         }}
                         title="按盈亏金额排序"
                       >
-                        盈亏金额($)
+                        {tradeListTitle.includes("未平单")
+                          ? "浮盈亏金额($)"
+                          : "盈亏金额($)"}
                         {sortKey !== "pnl" ? (
                           <ChevronsUpDown className="w-3 h-3" />
                         ) : sortAsc ? (
@@ -1100,17 +1891,19 @@ export function StopLossDialog({
                       </td>
                       <td className="p-2">${trade.entryPrice.toFixed(4)}</td>
                       <td className="p-2">${trade.exitPrice.toFixed(4)}</td>
-                      <td className="p-2">
-                        <span
-                          className={
-                            trade.wouldHitStopLoss
-                              ? "text-orange-600 font-semibold"
-                              : ""
-                          }
-                        >
-                          ${trade.finalPrice.toFixed(4)}
-                        </span>
-                      </td>
+                      {!tradeListTitle.includes("未平单") && (
+                        <td className="p-2">
+                          <span
+                            className={
+                              trade.wouldHitStopLoss
+                                ? "text-orange-600 font-semibold"
+                                : ""
+                            }
+                          >
+                            ${trade.finalPrice.toFixed(4)}
+                          </span>
+                        </td>
+                      )}
                       <td className="p-2">{trade.quantity.toFixed(4)}</td>
                       <td className="p-2">
                         <span
@@ -1127,6 +1920,20 @@ export function StopLossDialog({
                       </td>
                       <td className="p-2">
                         <span
+                          className={`${
+                            trade.maxProfitRate > 10
+                              ? "text-green-600"
+                              : trade.maxProfitRate > 5
+                              ? "text-green-500"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {trade.maxProfitRate.toFixed(2)}%
+                        </span>
+                      </td>
+
+                      <td className="p-2">
+                        <span
                           className={`px-2 py-1 rounded text-xs ${
                             trade.wouldHitStopLoss
                               ? "bg-orange-100 text-orange-800"
@@ -1138,27 +1945,51 @@ export function StopLossDialog({
                       </td>
                       <td className="p-2">
                         <span
-                          className={`font-semibold ${
-                            trade.pnlRate > 0
-                              ? "text-green-600"
-                              : "text-red-600"
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.wouldHitTakeProfit
+                              ? "bg-green-100 text-green-800"
+                              : "bg-gray-100 text-gray-800"
                           }`}
                         >
-                          {trade.pnlRate > 0 ? "+" : ""}
-                          {trade.pnlRate.toFixed(2)}%
+                          {trade.wouldHitTakeProfit ? "是" : "否"}
                         </span>
                       </td>
                       <td className="p-2">
-                        <span
-                          className={`font-semibold ${
-                            trade.pnlAmount > 0
-                              ? "text-green-600"
-                              : "text-red-600"
-                          }`}
-                        >
-                          {trade.pnlAmount > 0 ? "+" : ""}$
-                          {trade.pnlAmount.toFixed(2)}
-                        </span>
+                        {(() => {
+                          const isBreakEvenList =
+                            tradeListTitle.includes("未平单");
+                          const rate = !isBreakEvenList
+                            ? trade.pnlRate
+                            : trade.floatingRate ?? 0;
+                          return (
+                            <span
+                              className={`font-semibold ${
+                                rate > 0 ? "text-green-600" : "text-red-600"
+                              }`}
+                            >
+                              {rate > 0 ? "+" : ""}
+                              {rate.toFixed(2)}%
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2">
+                        {(() => {
+                          const isBreakEvenList =
+                            tradeListTitle.includes("未平单");
+                          const amount = !isBreakEvenList
+                            ? trade.pnlAmount
+                            : trade.floatingAmount ?? 0;
+                          return (
+                            <span
+                              className={`font-semibold ${
+                                amount > 0 ? "text-green-600" : "text-red-600"
+                              }`}
+                            >
+                              {amount > 0 ? "+" : ""}${amount.toFixed(2)}
+                            </span>
+                          );
+                        })()}
                       </td>
                       <td className="p-2">
                         <span
