@@ -338,7 +338,15 @@ export function StopLossDialog({
       // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上真实订单对比）
       const stopLossLevels = [
         -999, // 真实订单（用-999表示永不触发）
+        -0.1,
+        -0.2,
+        -0.3,
+        -0.4,
         -0.5,
+        -0.6,
+        -0.7,
+        -0.8,
+        -0.9,
         -1.0,
         -1.5,
         -2.0,
@@ -350,15 +358,8 @@ export function StopLossDialog({
         -6.0,
         -8.0,
         -10.0,
-        -12.0,
         -15.0,
         -20.0,
-        -25.0,
-        -30.0,
-        -35.0,
-        -40.0,
-        -45.0,
-        -50.0,
       ];
 
       // 当未启用止盈时，优先使用多 Worker 并行计算（显著提速）
@@ -1146,6 +1147,19 @@ export function StopLossDialog({
                 overrides?.enableTakeProfit ?? currentEnableTakeProfit;
               if (!isRealOrderRow && enableTPHere2) {
                 normalExitTrades++;
+                // 计算基于“最新一根K线”的浮动盈亏（K线获取失败时也尝试）
+                let floatingRate: number | undefined;
+                let floatingAmount: number | undefined;
+                try {
+                  const latest = await getLatestCloseAfter(trade as any);
+                  if (latest !== null) {
+                    const posValue = entryPrice * quantity;
+                    floatingRate = isLong
+                      ? ((latest - entryPrice) / entryPrice) * 100
+                      : ((entryPrice - latest) / entryPrice) * 100;
+                    floatingAmount = (floatingRate / 100) * posValue;
+                  }
+                } catch {}
                 const ignoredDetail: TradeDetail = {
                   roundId: trade.roundId,
                   symbol: trade.symbol,
@@ -1167,6 +1181,8 @@ export function StopLossDialog({
                   maxDrawdownRate: 0,
                   maxProfitRate: 0,
                   isUnfinished: true,
+                  floatingRate,
+                  floatingAmount,
                   openTime: trade.openTime,
                   closeTime: trade.closeTime,
                   openTradeIds: trade.openTradeIds || [],
