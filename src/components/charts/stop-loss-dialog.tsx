@@ -157,6 +157,27 @@ export function StopLossDialog({
     useState(takeProfitPercentage);
   const [currentEnableTakeProfit, setCurrentEnableTakeProfit] =
     useState(enableTakeProfit);
+  // 止盈对比：固定一个止损百分比，查看不同止盈下的盈亏
+  const [tpBaseStopLoss, setTpBaseStopLoss] = useState<number>(-2.0);
+  const [tpVariants, setTpVariants] = useState<
+    Array<{
+      percentage: number; // 这里代表止盈百分比
+      totalProfit: number;
+      totalProfitAmount: number;
+      totalLossAmount: number;
+      winRate: number;
+      totalTrades: number;
+      profitTrades: number;
+      lossTrades: number;
+      breakEvenTrades: number;
+      avgProfit: number;
+      avgLoss: number;
+      profitFactor: number;
+      takeProfitTrades: number;
+      stopLossTrades: number;
+      normalExitTrades: number;
+    }>
+  >([]);
 
   // 根据实际交易数据计算最佳止损点
   const calculateStopLoss = async (overrides?: {
@@ -219,6 +240,13 @@ export function StopLossDialog({
           orderId?: string;
         }> | null
       >();
+      // 最新价格缓存：按 symbol 缓存，设置短 TTL，避免在各分支频繁请求
+      const latestCloseCache = new Map<
+        string,
+        { price: number; cachedAt: number }
+      >();
+      const latestCloseInflight = new Map<string, Promise<number | null>>();
+      const LATEST_CLOSE_TTL_MS = 30_000; // 30s 内复用
 
       async function getKlinesOnce(trade: {
         roundId: string;
@@ -302,21 +330,40 @@ export function StopLossDialog({
         market: string;
         closeTime: string;
       }): Promise<number | null> {
-        try {
-          const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
-            symbol: trade.symbol,
-            exchange: (trade as any).exchange || "binance",
-            market: (trade as any).market || "futures",
-            interval: "1m",
-            startTime: trade.closeTime,
-            endTime: new Date().toISOString(),
-            order: "desc",
-          });
-          if (data && data.length > 0) return data[0].close;
-          return null;
-        } catch {
-          return null;
+        const symbolKey = `${(trade as any).exchange || "binance"}/$${
+          trade.symbol
+        }/${(trade as any).market || "futures"}`;
+        const now = Date.now();
+        const cached = latestCloseCache.get(symbolKey);
+        if (cached && now - cached.cachedAt < LATEST_CLOSE_TTL_MS) {
+          return cached.price;
         }
+        const inflight = latestCloseInflight.get(symbolKey);
+        if (inflight) return inflight;
+        const fetchP = (async () => {
+          try {
+            const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+              symbol: trade.symbol,
+              exchange: (trade as any).exchange || "binance",
+              market: (trade as any).market || "futures",
+              interval: "1m",
+              startTime: trade.closeTime,
+              endTime: new Date().toISOString(),
+              order: "desc",
+            });
+            const price = data && data.length > 0 ? data[0].close : null;
+            if (price !== null) {
+              latestCloseCache.set(symbolKey, { price, cachedAt: Date.now() });
+            }
+            return price;
+          } catch {
+            return cached ? cached.price : null; // 失败则退回上次缓存
+          } finally {
+            latestCloseInflight.delete(symbolKey);
+          }
+        })();
+        latestCloseInflight.set(symbolKey, fetchP);
+        return fetchP;
       }
 
       // 预热所有回合的缓存，避免在第一个止损等级时串行请求
@@ -572,6 +619,209 @@ export function StopLossDialog({
           },
           riskLevels,
         });
+
+        // 额外计算：在固定止损下，不同止盈的盈亏对比
+        const takeProfitLevels = [1, 2, 3, 5, 7.5, 10, 12, 15, 20];
+        const baseSL = tpBaseStopLoss; // 例如 -2 表示 -2%
+        const tpResults = await Promise.all(
+          takeProfitLevels.map(async (tpPct) => {
+            const stopLossPercentage = baseSL; // 复用主循环逻辑，但固定一个止损
+            let totalTrades = 0;
+            let profitTrades = 0;
+            let lossTrades = 0;
+            let breakEvenTrades = 0;
+            let totalProfitAmount = 0;
+            let totalLossAmount = 0;
+            let totalNetProfit = 0;
+            let takeProfitTrades = 0;
+            let stopLossTrades = 0;
+            let normalExitTrades = 0;
+
+            const tradesToProcess = allTrades;
+            for (const trade of tradesToProcess) {
+              const entryPrice = trade.avgEntryPrice;
+              const exitPrice = trade.avgExitPrice;
+              const quantity = trade.totalQuantity;
+              const isLong = trade.positionSide === "LONG";
+              if (!entryPrice || !exitPrice || !quantity) continue;
+              try {
+                const klines = await getKlinesOnce(trade as any);
+                if (!klines || klines.length === 0) {
+                  // 无K线：按原始结果，但在启用止盈时将其视为未平单（不计入），与主逻辑一致
+                  // 这里我们只做统计，用于TP对比；保持与主逻辑一致：启用止盈忽略真实平单
+                  normalExitTrades++;
+                  continue;
+                }
+
+                // 计算最大浮亏/浮盈（用于后续展示或判断）
+                let maxDrawdownRate = 0;
+                let maxProfitRate = 0;
+                for (const kline of klines) {
+                  const drawdown = isLong
+                    ? ((kline.low - entryPrice) / entryPrice) * 100
+                    : ((entryPrice - kline.high) / entryPrice) * 100;
+                  const profitRate = isLong
+                    ? ((kline.high - entryPrice) / entryPrice) * 100
+                    : ((entryPrice - kline.low) / entryPrice) * 100;
+                  if (drawdown < maxDrawdownRate) maxDrawdownRate = drawdown;
+                  if (profitRate > maxProfitRate) maxProfitRate = profitRate;
+                }
+
+                // 先考虑两次开仓之间的早停（若存在两次开仓）
+                let wouldHitStopLoss = false;
+                let wouldHitTakeProfit = false;
+                let finalPrice = exitPrice;
+                if (trade.openTradeIds && trade.openTradeIds.length >= 2) {
+                  try {
+                    const opens = await getFirstTwoOpensOnce(trade as any);
+                    if (opens.length >= 2) {
+                      const first = opens[0];
+                      const second = opens[1];
+                      const firstOpenTime = new Date(
+                        first.timestamp
+                      ).toISOString();
+                      const secondOpenTime = new Date(
+                        second.timestamp
+                      ).toISOString();
+                      const firstStopPrice = isLong
+                        ? first.price * (1 + stopLossPercentage / 100)
+                        : first.price * (1 - stopLossPercentage / 100);
+                      const firstTakeProfitPrice = isLong
+                        ? first.price * (1 + tpPct / 100)
+                        : first.price * (1 - tpPct / 100);
+                      const betweenK = klines.filter(
+                        (k) =>
+                          k.openTime >= firstOpenTime &&
+                          k.closeTime <= secondOpenTime
+                      );
+                      for (const k of betweenK) {
+                        if (k.closeTime === secondOpenTime) break;
+                        if (isLong) {
+                          if (k.high >= firstTakeProfitPrice) {
+                            wouldHitTakeProfit = true;
+                            finalPrice = firstTakeProfitPrice;
+                            break;
+                          }
+                          if (k.low <= firstStopPrice) {
+                            wouldHitStopLoss = true;
+                            finalPrice = firstStopPrice;
+                            break;
+                          }
+                        } else {
+                          if (k.low <= firstTakeProfitPrice) {
+                            wouldHitTakeProfit = true;
+                            finalPrice = firstTakeProfitPrice;
+                            break;
+                          }
+                          if (k.high >= firstStopPrice) {
+                            wouldHitStopLoss = true;
+                            finalPrice = firstStopPrice;
+                            break;
+                          }
+                        }
+                      }
+                      if (wouldHitTakeProfit || wouldHitStopLoss) {
+                        const pnlRateEarly = isLong
+                          ? ((finalPrice - first.price) / first.price) * 100
+                          : ((first.price - finalPrice) / first.price) * 100;
+                        const pnlAmountEarly =
+                          (pnlRateEarly / 100) * (first.price * first.quantity);
+                        totalTrades++;
+                        totalNetProfit += pnlAmountEarly;
+                        if (wouldHitTakeProfit) takeProfitTrades++;
+                        else stopLossTrades++;
+                        if (pnlAmountEarly > 0) {
+                          profitTrades++;
+                          totalProfitAmount += pnlAmountEarly;
+                        } else if (pnlAmountEarly < 0) {
+                          lossTrades++;
+                          totalLossAmount += Math.abs(pnlAmountEarly);
+                        }
+                        continue;
+                      }
+                    }
+                  } catch {}
+                }
+
+                // 正常期间：检查止盈/止损
+                const stopLossPrice = isLong
+                  ? entryPrice * (1 + stopLossPercentage / 100)
+                  : entryPrice * (1 - stopLossPercentage / 100);
+                const takeProfitPrice = isLong
+                  ? entryPrice * (1 + tpPct / 100)
+                  : entryPrice * (1 - tpPct / 100);
+                for (const kline of klines) {
+                  if (isLong) {
+                    if (kline.high >= takeProfitPrice) {
+                      wouldHitTakeProfit = true;
+                      finalPrice = takeProfitPrice;
+                      break;
+                    }
+                    if (kline.low <= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      break;
+                    }
+                  } else {
+                    if (kline.low <= takeProfitPrice) {
+                      wouldHitTakeProfit = true;
+                      finalPrice = takeProfitPrice;
+                      break;
+                    }
+                    if (kline.high >= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      break;
+                    }
+                  }
+                }
+
+                // 计算Pnl
+                const pnlRate = isLong
+                  ? ((finalPrice - entryPrice) / entryPrice) * 100
+                  : ((entryPrice - finalPrice) / entryPrice) * 100;
+                const pnlAmount = (pnlRate / 100) * (entryPrice * quantity);
+                totalTrades++;
+                totalNetProfit += pnlAmount;
+                if (wouldHitTakeProfit) takeProfitTrades++;
+                else if (wouldHitStopLoss) stopLossTrades++;
+                else normalExitTrades++;
+                if (pnlAmount > 0) {
+                  profitTrades++;
+                  totalProfitAmount += pnlAmount;
+                } else if (pnlAmount < 0) {
+                  lossTrades++;
+                  totalLossAmount += Math.abs(pnlAmount);
+                }
+              } catch {}
+            }
+
+            const winRate =
+              totalTrades > 0 ? (profitTrades / totalTrades) * 100 : 0;
+            const avgProfit =
+              profitTrades > 0 ? totalProfitAmount / profitTrades : 0;
+            const avgLoss = lossTrades > 0 ? totalLossAmount / lossTrades : 0;
+            const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
+            return {
+              percentage: tpPct,
+              totalProfit: Number(totalNetProfit.toFixed(2)),
+              totalProfitAmount: Number(totalProfitAmount.toFixed(2)),
+              totalLossAmount: Number(totalLossAmount.toFixed(2)),
+              winRate: Number(winRate.toFixed(1)),
+              totalTrades,
+              profitTrades,
+              lossTrades,
+              breakEvenTrades,
+              avgProfit: Number(avgProfit.toFixed(2)),
+              avgLoss: Number(avgLoss.toFixed(2)),
+              profitFactor: Number(profitFactor.toFixed(2)),
+              takeProfitTrades,
+              stopLossTrades,
+              normalExitTrades,
+            };
+          })
+        );
+        setTpVariants(tpResults);
         setLoading(false);
         return; // 已完成：多 Worker 分支
       }
