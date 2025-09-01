@@ -12,6 +12,7 @@ import { Button } from "@/components/ui/button";
 import { KlineChart, TimeFrame, MarketType } from "./kline-chart";
 import { KlineData, RoundPnlData, TradeData } from "@/lib/types";
 import { cryptoApi } from "@/lib/api";
+import { klineCacheService } from "@/lib/kline-cache";
 
 interface KlineDialogProps {
   round: RoundPnlData;
@@ -154,7 +155,8 @@ export function KlineDialog({
           market: currentMarket,
           timeFrame: currentTimeFrame,
         });
-        const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+        // 优先使用缓存服务获取K线数据
+        const data = (await klineCacheService.getKlines({
           symbol: currentSymbol,
           exchange: round.exchange || "binance",
           market: currentMarket,
@@ -162,8 +164,7 @@ export function KlineDialog({
           startTime,
           endTime,
           order: "asc",
-          // 不传递 limit，让后端返回所有数据
-        });
+        })) as KlineData[];
         console.log("K线数据获取成功:", data?.length, "条");
         console.log("设置displayKlines:", data);
         setDisplayKlines(data || []);

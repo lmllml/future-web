@@ -20,6 +20,10 @@ import {
   Target,
 } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
+import {
+  klineCacheService,
+  type KlineData as CachedKlineData,
+} from "@/lib/kline-cache";
 import { KlineDialog } from "@/components/charts/kline-dialog";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
@@ -260,14 +264,15 @@ export function StopLossDialog({
           return klineCache.get(trade.roundId) || [];
         }
         try {
-          const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+          // 使用缓存服务获取K线数据
+          const data = await klineCacheService.getKlinesForRound({
+            roundId: trade.roundId,
             symbol: trade.symbol,
             exchange: (trade as any).exchange || "binance",
             market: "futures",
             interval: "1m", // 恢复 1m 粒度确保极值与早停判定准确
-            startTime: trade.openTime,
-            endTime: trade.closeTime,
-            order: "asc",
+            openTime: trade.openTime,
+            closeTime: trade.closeTime,
           });
           klineCache.set(trade.roundId, data || null);
           return data || [];
@@ -342,16 +347,13 @@ export function StopLossDialog({
         if (inflight) return inflight;
         const fetchP = (async () => {
           try {
-            const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+            // 使用缓存服务获取最新价格
+            const price = await klineCacheService.getLatestPrice({
               symbol: trade.symbol,
               exchange: (trade as any).exchange || "binance",
               market: (trade as any).market || "futures",
               interval: "1m",
-              startTime: trade.closeTime,
-              endTime: new Date().toISOString(),
-              order: "desc",
             });
-            const price = data && data.length > 0 ? data[0].close : null;
             if (price !== null) {
               latestCloseCache.set(symbolKey, { price, cachedAt: Date.now() });
             }
@@ -368,12 +370,23 @@ export function StopLossDialog({
 
       // 预热所有回合的缓存，避免在第一个止损等级时串行请求
       async function warmCaches() {
+        // 使用缓存服务的批量预热功能
+        await klineCacheService.warmupCache(
+          allTrades.map((t) => ({
+            symbol: t.symbol,
+            exchange: (t as any).exchange || "binance",
+            market: "futures",
+            openTime: t.openTime,
+            closeTime: t.closeTime,
+          })),
+          ["1m"] // 使用1分钟K线
+        );
+
+        // 继续预热开仓成交数据
         const concurrency = 10;
         for (let i = 0; i < allTrades.length; i += concurrency) {
           const batch = allTrades.slice(i, i + concurrency);
           await Promise.all([
-            // 并发拉取每个回合的K线
-            ...batch.map((t) => getKlinesOnce(t as any)),
             // 并发拉取每个回合的首两笔开仓成交
             ...batch.map((t) => getFirstTwoOpensOnce(t as any)),
           ]);
@@ -645,7 +658,16 @@ export function StopLossDialog({
               const isLong = trade.positionSide === "LONG";
               if (!entryPrice || !exitPrice || !quantity) continue;
               try {
-                const klines = await getKlinesOnce(trade as any);
+                // 直接使用缓存服务获取K线数据，因为已经预热过了
+                const klines = (await klineCacheService.getKlinesForRound({
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  exchange: (trade as any).exchange || "binance",
+                  market: "futures",
+                  interval: "1m",
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                })) as KlineData[];
                 if (!klines || klines.length === 0) {
                   // 无K线：按原始结果，但在启用止盈时将其视为未平单（不计入），与主逻辑一致
                   // 这里我们只做统计，用于TP对比；保持与主逻辑一致：启用止盈忽略真实平单
