@@ -141,7 +141,7 @@ export function StopLossDialog({
   positionSide,
   startTime,
   endTime,
-  takeProfitPercentage = 10,
+  takeProfitPercentage = 1,
   enableTakeProfit = false,
 }: Props) {
   const [isFullscreen, setIsFullscreen] = useState(true);
@@ -1147,19 +1147,6 @@ export function StopLossDialog({
                 overrides?.enableTakeProfit ?? currentEnableTakeProfit;
               if (!isRealOrderRow && enableTPHere2) {
                 normalExitTrades++;
-                // 计算基于“最新一根K线”的浮动盈亏（K线获取失败时也尝试）
-                let floatingRate: number | undefined;
-                let floatingAmount: number | undefined;
-                try {
-                  const latest = await getLatestCloseAfter(trade as any);
-                  if (latest !== null) {
-                    const posValue = entryPrice * quantity;
-                    floatingRate = isLong
-                      ? ((latest - entryPrice) / entryPrice) * 100
-                      : ((entryPrice - latest) / entryPrice) * 100;
-                    floatingAmount = (floatingRate / 100) * posValue;
-                  }
-                } catch {}
                 const ignoredDetail: TradeDetail = {
                   roundId: trade.roundId,
                   symbol: trade.symbol,
@@ -1181,8 +1168,6 @@ export function StopLossDialog({
                   maxDrawdownRate: 0,
                   maxProfitRate: 0,
                   isUnfinished: true,
-                  floatingRate,
-                  floatingAmount,
                   openTime: trade.openTime,
                   closeTime: trade.closeTime,
                   openTradeIds: trade.openTradeIds || [],
