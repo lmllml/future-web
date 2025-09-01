@@ -12,6 +12,10 @@ export type PreparedMetric = {
   earlyFirstOpenPrice?: number;
   earlyFirstOpenQty?: number;
   earlyDrawdownRate?: number; // <= 0
+  // 基于路径的K线数据（用于按时间顺序判断是否触发止损）
+  klineHighs?: Float32Array;
+  klineLows?: Float32Array;
+  klineTimestamps?: Float64Array; // ms
 };
 
 export type TradeDetail = {
@@ -70,7 +74,7 @@ function computeForLevel(
 
     // percentage === 0 means "no stop loss" (mapped from -999 upstream)
     if (percentage !== 0) {
-      // early stop between first and second open
+      // 先判断两次开仓之间的早期止损（若预处理提供）
       if (
         m.earlyDrawdownRate !== undefined &&
         m.earlyFirstOpenPrice !== undefined &&
@@ -116,43 +120,70 @@ function computeForLevel(
         continue;
       }
 
-      // stop loss triggered by overall max drawdown in period
-      if (m.maxDrawdownRate !== undefined && m.maxDrawdownRate <= percentage) {
-        const finalPrice = isLong
+      // 基于K线"路径"按时间顺序判断是否在到达真实平仓前触发止损
+      if (
+        m.klineLows &&
+        m.klineHighs &&
+        m.klineTimestamps &&
+        m.klineLows.length === m.klineHighs.length &&
+        m.klineHighs.length === m.klineTimestamps.length &&
+        m.klineLows.length > 0
+      ) {
+        const stopLossPrice = isLong
           ? entryPrice * (1 + percentage / 100)
           : entryPrice * (1 - percentage / 100);
-        const pnlRate = isLong
-          ? ((finalPrice - entryPrice) / entryPrice) * 100
-          : ((entryPrice - finalPrice) / entryPrice) * 100;
-        const pnlAmount = (pnlRate / 100) * (entryPrice * quantity);
-
-        totalTrades++;
-        totalNetProfit += pnlAmount;
-        const detail: TradeDetail = {
-          roundId: m.roundId,
-          symbol: m.symbol,
-          positionSide: m.positionSide,
-          entryPrice,
-          exitPrice,
-          quantity,
-          finalPrice,
-          pnlAmount,
-          pnlRate,
-          wouldHitStopLoss: true,
-          maxDrawdownRate: m.maxDrawdownRate,
-          openTime: m.openTime,
-          closeTime: m.closeTime,
-        };
-        if (pnlAmount > 0) {
-          profitTrades++;
-          totalProfitAmount += pnlAmount;
-          profitTradeDetails.push(detail);
-        } else if (pnlAmount < 0) {
-          lossTrades++;
-          totalLossAmount += Math.abs(pnlAmount);
-          lossTradeDetails.push(detail);
+        const closeTimeMs = new Date(m.closeTime).getTime();
+        let triggered = false;
+        for (let i = 0; i < m.klineTimestamps.length; i++) {
+          const t = m.klineTimestamps[i];
+          // 不再在 closeTime 停止，持续扫描到“最新”K线
+          if (isLong) {
+            if (m.klineLows[i] <= stopLossPrice) {
+              triggered = true;
+              break;
+            }
+          } else {
+            if (m.klineHighs[i] >= stopLossPrice) {
+              triggered = true;
+              break;
+            }
+          }
         }
-        continue;
+        if (triggered) {
+          const finalPrice = stopLossPrice;
+          const pnlRate = isLong
+            ? ((finalPrice - entryPrice) / entryPrice) * 100
+            : ((entryPrice - finalPrice) / entryPrice) * 100;
+          const pnlAmount = (pnlRate / 100) * (entryPrice * quantity);
+
+          totalTrades++;
+          totalNetProfit += pnlAmount;
+          const detail: TradeDetail = {
+            roundId: m.roundId,
+            symbol: m.symbol,
+            positionSide: m.positionSide,
+            entryPrice,
+            exitPrice,
+            quantity,
+            finalPrice,
+            pnlAmount,
+            pnlRate,
+            wouldHitStopLoss: true,
+            maxDrawdownRate: m.maxDrawdownRate,
+            openTime: m.openTime,
+            closeTime: m.closeTime,
+          };
+          if (pnlAmount > 0) {
+            profitTrades++;
+            totalProfitAmount += pnlAmount;
+            profitTradeDetails.push(detail);
+          } else if (pnlAmount < 0) {
+            lossTrades++;
+            totalLossAmount += Math.abs(pnlAmount);
+            lossTradeDetails.push(detail);
+          }
+          continue;
+        }
       }
     }
 

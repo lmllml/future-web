@@ -45,6 +45,10 @@ class KlineCacheService {
   private inflightRequests = new Map<string, Promise<KlineData[]>>();
   private cleanupInterval: NodeJS.Timeout | null = null;
   private refreshInterval: NodeJS.Timeout | null = null;
+  // 离线模式：仅使用已预加载的数据，禁止任何网络请求与自动刷新
+  private offlineMode = false;
+  // 数据集的“数据库最新一根K线时间”缓存（按 exchange/market/symbol/interval 维度）
+  private datasetEndTime = new Map<string, string>();
 
   // 缓存TTL: 1分钟K线缓存5分钟，其他缓存30分钟
   private readonly CACHE_TTL_1M = 5 * 60 * 1000; // 5分钟
@@ -65,6 +69,34 @@ class KlineCacheService {
    */
   private generateCacheKey(params: CacheKey): string {
     return `${params.exchange}:${params.market}:${params.symbol}:${params.interval}:${params.startTime}:${params.endTime}`;
+  }
+
+  private generateSymbolKey(params: {
+    exchange: string;
+    market: string;
+    symbol: string;
+    interval: string;
+  }): string {
+    return `${params.exchange}:${params.market}:${params.symbol}:${params.interval}`;
+  }
+
+  /**
+   * 启用/关闭离线模式
+   * - 开启后：仅从缓存读取，拒绝网络请求，停止自动刷新与清理调度
+   * - 关闭后：恢复正常行为
+   */
+  setOfflineMode(enabled: boolean): void {
+    this.offlineMode = enabled;
+    if (enabled) {
+      this.stopSchedulers();
+    } else {
+      this.startCleanupScheduler();
+      this.startRefreshScheduler();
+    }
+  }
+
+  isOfflineMode(): boolean {
+    return this.offlineMode;
   }
 
   /**
@@ -201,6 +233,58 @@ class KlineCacheService {
   }
 
   /**
+   * 仅从缓存读取（允许部分覆盖）
+   * - 当请求时间范围超出缓存范围，返回缓存与请求的交集部分
+   * - 不触发任何网络请求
+   */
+  getKlinesFromCache(params: {
+    symbol: string;
+    exchange?: string;
+    market?: string;
+    interval: string;
+    startTime: string;
+    endTime: string;
+    order?: "asc" | "desc";
+  }): KlineData[] {
+    const exchange = params.exchange || "binance";
+    const market = params.market || "futures";
+    const requestStart = new Date(params.startTime).getTime();
+    const requestEnd = new Date(params.endTime).getTime();
+
+    let union: KlineData[] = [];
+
+    for (const [key, entry] of this.cache.entries()) {
+      const [ex, mk, sym, interval] = key.split(":");
+      if (
+        ex !== exchange ||
+        mk !== market ||
+        sym !== params.symbol ||
+        interval !== params.interval
+      ) {
+        continue;
+      }
+      // 取交集
+      const cachedStart = new Date(entry.startTime).getTime();
+      const cachedEnd = new Date(entry.endTime).getTime();
+      const overlapStart = Math.max(requestStart, cachedStart);
+      const overlapEnd = Math.min(requestEnd, cachedEnd);
+      if (overlapStart <= overlapEnd) {
+        const part = entry.data.filter((k) => {
+          const t = new Date(k.openTime).getTime();
+          return t >= overlapStart && t <= overlapEnd;
+        });
+        union = union.concat(part);
+      }
+    }
+
+    union.sort(
+      (a, b) => new Date(a.openTime).getTime() - new Date(b.openTime).getTime()
+    );
+    if (params.order === "desc") return [...union].reverse();
+    return union;
+  }
+
+  /**
    * 获取K线数据，优先使用缓存
    */
   async getKlines(params: {
@@ -236,7 +320,10 @@ class KlineCacheService {
       return params.order === "desc" ? [...result].reverse() : result;
     }
 
-    // 3. 发起新请求
+    // 3. 发起新请求（离线模式下禁止网络请求，退化为仅从缓存读取的部分覆盖返回）
+    if (this.offlineMode) {
+      return this.getKlinesFromCache(params);
+    }
     const requestPromise = this.fetchKlines(params);
     this.inflightRequests.set(cacheKey, requestPromise);
 
@@ -272,6 +359,10 @@ class KlineCacheService {
     startTime: string;
     endTime: string;
   }): Promise<KlineData[]> {
+    if (this.offlineMode) {
+      // 离线模式下不应触发网络请求
+      return [];
+    }
     const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
       symbol: params.symbol,
       exchange: params.exchange || "binance",
@@ -372,36 +463,39 @@ class KlineCacheService {
 
     const requests: Promise<KlineData[]>[] = [];
 
-    // 请求前面缺失的数据
-    if (newStart < existingStart) {
-      requests.push(
-        this.getKlines({
-          symbol,
-          exchange,
-          market,
-          interval,
-          startTime: newStartTime,
-          endTime: new Date(existingStart - 1).toISOString(),
-        })
-      );
+    // 离线模式：不再请求缺失部分，仅返回交集
+    if (!this.offlineMode) {
+      // 请求前面缺失的数据
+      if (newStart < existingStart) {
+        requests.push(
+          this.getKlines({
+            symbol,
+            exchange,
+            market,
+            interval,
+            startTime: newStartTime,
+            endTime: new Date(existingStart - 1).toISOString(),
+          })
+        );
+      }
+
+      // 请求后面缺失的数据
+      if (newEnd > existingEnd) {
+        requests.push(
+          this.getKlines({
+            symbol,
+            exchange,
+            market,
+            interval,
+            startTime: new Date(existingEnd + 1).toISOString(),
+            endTime: newEndTime,
+          })
+        );
+      }
     }
 
-    // 请求后面缺失的数据
-    if (newEnd > existingEnd) {
-      requests.push(
-        this.getKlines({
-          symbol,
-          exchange,
-          market,
-          interval,
-          startTime: new Date(existingEnd + 1).toISOString(),
-          endTime: newEndTime,
-        })
-      );
-    }
-
-    if (requests.length === 0) {
-      // 已有完整数据，直接返回筛选结果
+    if (requests.length === 0 || this.offlineMode) {
+      // 离线或无需请求：返回交集部分
       return existingData.filter((k) => {
         const kTime = new Date(k.openTime).getTime();
         return kTime >= newStart && kTime <= newEnd;
@@ -456,31 +550,49 @@ class KlineCacheService {
     const market = params.market || "futures";
     const interval = params.interval || "1m";
 
-    // 获取最近1小时的K线数据
-    const endTime = new Date();
-    const startTime = new Date(endTime.getTime() - 60 * 60 * 1000); // 1小时前
-
-    try {
-      const klines = await this.getKlines({
+    // 离线模式：从缓存中读取最新值；在线模式：回退到最近1小时请求
+    if (this.offlineMode) {
+      const latestEnd = this.getCachedEndTime({
         symbol: params.symbol,
         exchange,
         market,
         interval,
-        startTime: startTime.toISOString(),
-        endTime: endTime.toISOString(),
+      });
+      if (!latestEnd) return null;
+      const klines = this.getKlinesFromCache({
+        symbol: params.symbol,
+        exchange,
+        market,
+        interval,
+        startTime: new Date(
+          new Date(latestEnd).getTime() - 60 * 60 * 1000
+        ).toISOString(),
+        endTime: latestEnd,
         order: "desc",
       });
-
       return klines.length > 0 ? klines[0].close : null;
-    } catch {
-      return null;
     }
+
+    // 在线模式保持原行为
+    const endTime = new Date();
+    const startTime = new Date(endTime.getTime() - 60 * 60 * 1000);
+    const klines = await this.getKlines({
+      symbol: params.symbol,
+      exchange,
+      market,
+      interval,
+      startTime: startTime.toISOString(),
+      endTime: endTime.toISOString(),
+      order: "desc",
+    });
+    return klines.length > 0 ? klines[0].close : null;
   }
 
   /**
    * 启动定期清理调度器
    */
   private startCleanupScheduler(): void {
+    if (this.cleanupInterval || this.offlineMode) return;
     // 每5分钟清理一次过期缓存
     this.cleanupInterval = setInterval(() => {
       this.cleanExpiredCache();
@@ -493,6 +605,7 @@ class KlineCacheService {
    * 启动定期刷新调度器
    */
   private startRefreshScheduler(): void {
+    if (this.refreshInterval || this.offlineMode) return;
     // 每2分钟刷新一次最新的1分钟K线数据
     this.refreshInterval = setInterval(() => {
       this.refreshLatestData();
@@ -710,6 +823,132 @@ class KlineCacheService {
       startTime: params.openTime,
       endTime: params.closeTime,
     });
+  }
+
+  /**
+   * 获取某个 symbol 在缓存中的最大片段结束时间（如果存在）
+   */
+  getCachedEndTime(params: {
+    symbol: string;
+    exchange?: string;
+    market?: string;
+    interval: string;
+  }): string | null {
+    const exchange = params.exchange || "binance";
+    const market = params.market || "futures";
+    // 先返回已缓存的数据集结束时间（来自数据库最新一根K线的时间）
+    const endKey = this.generateSymbolKey({
+      exchange,
+      market,
+      symbol: params.symbol,
+      interval: params.interval,
+    });
+    const preset = this.datasetEndTime.get(endKey);
+    if (preset) return preset;
+    let latest: number | null = null;
+    for (const [key, entry] of this.cache.entries()) {
+      const [ex, mk, sym, interval] = key.split(":");
+      if (
+        ex !== exchange ||
+        mk !== market ||
+        sym !== params.symbol ||
+        interval !== params.interval
+      )
+        continue;
+      const end = new Date(entry.endTime).getTime();
+      if (latest === null || end > latest) latest = end;
+    }
+    return latest ? new Date(latest).toISOString() : null;
+  }
+
+  /**
+   * 设置/获取来自数据库的最新K线结束时间（外部明确指定）
+   */
+  setDatasetEndTime(params: {
+    symbol: string;
+    exchange?: string;
+    market?: string;
+    interval: string;
+    endTime: string;
+  }): void {
+    const key = this.generateSymbolKey({
+      exchange: params.exchange || "binance",
+      market: params.market || "futures",
+      symbol: params.symbol,
+      interval: params.interval,
+    });
+    this.datasetEndTime.set(key, params.endTime);
+  }
+
+  getDatasetEndTime(params: {
+    symbol: string;
+    exchange?: string;
+    market?: string;
+    interval: string;
+  }): string | null {
+    const key = this.generateSymbolKey({
+      exchange: params.exchange || "binance",
+      market: params.market || "futures",
+      symbol: params.symbol,
+      interval: params.interval,
+    });
+    return this.datasetEndTime.get(key) || null;
+  }
+
+  /**
+   * 调用后端一次，获取数据库中该 symbol 的最新 1 根 K 线的结束时间，并缓存下来
+   */
+  async fetchAndCacheLatestEndTime(params: {
+    symbol: string;
+    exchange?: string;
+    market?: string;
+    interval?: string;
+    fallbackHours?: number; // 若后端需要时间范围，则使用回溯窗口
+  }): Promise<string | null> {
+    if (this.offlineMode)
+      return this.getDatasetEndTime({
+        symbol: params.symbol,
+        exchange: params.exchange,
+        market: params.market,
+        interval: params.interval || "1m",
+      });
+
+    const exchange = params.exchange || "binance";
+    const market = params.market || "futures";
+    const interval = params.interval || "1m";
+    const now = new Date();
+    const endTime = now.toISOString();
+    const hours = params.fallbackHours ?? 24;
+    const startTime = new Date(
+      now.getTime() - hours * 60 * 60 * 1000
+    ).toISOString();
+
+    try {
+      const { data } = await cryptoApi.listKlines<{ data: KlineData[] }>({
+        symbol: params.symbol,
+        exchange,
+        market,
+        interval,
+        startTime,
+        endTime,
+        order: "desc",
+        limit: 1,
+      });
+      const last = (data || [])[0];
+      const lastEnd = last?.closeTime || last?.openTime || null;
+      if (lastEnd) {
+        this.setDatasetEndTime({
+          symbol: params.symbol,
+          exchange,
+          market,
+          interval,
+          endTime: lastEnd,
+        });
+      }
+      return lastEnd;
+    } catch {
+      return null;
+    }
   }
 }
 

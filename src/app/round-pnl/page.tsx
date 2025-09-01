@@ -54,20 +54,35 @@ export default function RoundPnlPage({
       if (!symbol || !startTime || !endTime) return;
 
       try {
-        // 预加载从筛选开始时间到当前时间的K线数据
-        const extendedEndTime = new Date().toISOString();
+        // 切换到在线模式以允许预加载一次
+        klineCacheService.setOfflineMode(false);
+        // 清空旧缓存，避免混入其他 symbol/interval 的数据
+        klineCacheService.clearCache();
+
+        // 先请求数据库最新一根 1m k 线的结束时间，并缓存
+        const dbLast = await klineCacheService.fetchAndCacheLatestEndTime({
+          symbol,
+          exchange: "binance",
+          market: "futures",
+          interval: "1m",
+          fallbackHours: 48,
+        });
+        const endAt = dbLast || new Date().toISOString();
 
         await klineCacheService.preloadKlines({
           symbols: [symbol],
           exchange: "binance",
           market: "futures",
-          intervals: ["1m", "5m", "15m", "1h"], // 预加载多个时间周期
+          intervals: ["1m"],
           startTime,
-          endTime: extendedEndTime,
+          endTime: endAt,
         });
 
+        // 预加载完成后，进入离线模式：后续前端计算仅使用这份数据，不再发起网络请求
+        klineCacheService.setOfflineMode(true);
+
         console.log(
-          `已预加载 ${symbol} 的K线数据 (${startTime} - ${extendedEndTime})`
+          `已预加载 ${symbol} 的 1m K线数据 (${startTime} - ${endAt})，进入离线模式`
         );
       } catch (error) {
         console.warn("预加载K线数据失败:", error);
