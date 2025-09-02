@@ -1,15 +1,25 @@
-"use client";
-
-import { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
+import { Button } from "@/components/ui/button";
 import {
   Dialog,
   DialogContent,
   DialogHeader,
   DialogTitle,
 } from "@/components/ui/dialog";
-import { Button } from "@/components/ui/button";
+import { Badge } from "@/components/ui/badge";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { Loader2, Maximize2, Minimize2 } from "lucide-react";
+import { cn } from "@/lib/utils";
 import { cryptoApi } from "@/lib/api";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 
 interface Props {
   symbol: string;
@@ -158,9 +168,9 @@ export default function StopLossDialog({
         baseStopLoss: tpBaseStopLoss,
       });
 
-      if (resp && (resp as any).analysis) {
-        setAnalysis((resp as any).analysis);
-        setTpVariants((resp as any).takeProfitComparison ?? []);
+      if (resp && resp.analysis) {
+        setAnalysis(resp.analysis);
+        setTpVariants(resp.takeProfitComparison ?? []);
         setLoading(false);
         return;
       } else {
@@ -215,19 +225,20 @@ export default function StopLossDialog({
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className={`max-w-7xl ${
+        className={cn(
+          "max-w-7xl",
           isFullscreen
             ? "w-[95vw] h-[95vh] max-h-[95vh]"
             : "w-[90vw] h-[80vh] max-h-[80vh]"
-        }`}
+        )}
       >
         <DialogHeader className="flex-shrink-0">
           <div className="flex items-center justify-between">
             <DialogTitle className="flex items-center gap-2">
               <span>止损止盈分析 - {symbol}</span>
-              <span className="bg-gray-200 text-gray-700 text-xs px-2 py-1 rounded">
+              <Badge variant="outline" className="text-xs">
                 {positionSide || "ALL"}
-              </span>
+              </Badge>
             </DialogTitle>
 
             <div className="flex items-center gap-2">
@@ -258,22 +269,20 @@ export default function StopLossDialog({
           {/* 止盈设置 */}
           <div className="flex items-center gap-4 mt-4">
             <div className="flex items-center gap-2">
-              <label htmlFor="takeProfit" className="text-sm font-medium">
-                止盈百分比:
-              </label>
-              <input
+              <Label htmlFor="takeProfit">止盈百分比:</Label>
+              <Input
                 id="takeProfit"
                 type="number"
                 value={currentTakeProfitPercentage}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
+                onChange={(e) =>
                   setCurrentTakeProfitPercentage(Number(e.target.value))
                 }
-                className="w-20 px-2 py-1 border rounded text-sm"
+                className="w-20"
                 step="0.1"
                 min="0.1"
                 max="50"
               />
-              <span className="text-sm text-gray-500">%</span>
+              <span className="text-sm text-muted-foreground">%</span>
               <Button
                 variant="outline"
                 size="sm"
@@ -317,11 +326,11 @@ export default function StopLossDialog({
           {analysis && !loading && !error && (
             <div className="space-y-6">
               {/* 最佳止损点摘要 */}
-              <div className="bg-gray-50 p-4 rounded-lg">
+              <div className="bg-muted/50 p-4 rounded-lg">
                 <h3 className="text-lg font-semibold mb-2">最佳止损点</h3>
                 <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
                   <div>
-                    <div className="text-gray-600">止损百分比</div>
+                    <div className="text-muted-foreground">止损百分比</div>
                     <div className="font-semibold">
                       {analysis.optimalStopLoss.percentage === 0
                         ? "真实订单"
@@ -329,19 +338,19 @@ export default function StopLossDialog({
                     </div>
                   </div>
                   <div>
-                    <div className="text-gray-600">总盈利</div>
+                    <div className="text-muted-foreground">总盈利</div>
                     <div className="font-semibold text-green-600">
                       ${formatNumber(analysis.optimalStopLoss.totalProfit)}
                     </div>
                   </div>
                   <div>
-                    <div className="text-gray-600">胜率</div>
+                    <div className="text-muted-foreground">胜率</div>
                     <div className="font-semibold">
                       {formatPercentage(analysis.optimalStopLoss.winRate)}
                     </div>
                   </div>
                   <div>
-                    <div className="text-gray-600">盈亏比</div>
+                    <div className="text-muted-foreground">盈亏比</div>
                     <div className="font-semibold">
                       {analysis.optimalStopLoss.profitFactor.toFixed(2)}
                     </div>
@@ -353,85 +362,90 @@ export default function StopLossDialog({
               <div>
                 <h3 className="text-lg font-semibold mb-2">风险水平对比</h3>
                 <div className="border rounded-lg overflow-hidden">
-                  <table className="w-full">
-                    <thead className="bg-gray-50">
-                      <tr>
-                        <th className="px-4 py-2 text-left">止损水平</th>
-                        <th className="px-4 py-2 text-right">总盈利</th>
-                        <th className="px-4 py-2 text-right">总交易</th>
-                        <th className="px-4 py-2 text-right">盈利交易</th>
-                        <th className="px-4 py-2 text-right">亏损交易</th>
-                        <th className="px-4 py-2 text-right">胜率</th>
-                        <th className="px-4 py-2 text-right">盈亏比</th>
-                        <th className="px-4 py-2 text-right">止损触发</th>
-                        <th className="px-4 py-2 text-right">止盈触发</th>
-                      </tr>
-                    </thead>
-                    <tbody>
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead>止损水平</TableHead>
+                        <TableHead className="text-right">总盈利</TableHead>
+                        <TableHead className="text-right">总交易</TableHead>
+                        <TableHead className="text-right">盈利交易</TableHead>
+                        <TableHead className="text-right">亏损交易</TableHead>
+                        <TableHead className="text-right">胜率</TableHead>
+                        <TableHead className="text-right">盈亏比</TableHead>
+                        <TableHead className="text-right">止损触发</TableHead>
+                        <TableHead className="text-right">止盈触发</TableHead>
+                      </TableRow>
+                    </TableHeader>
+                    <TableBody>
                       {analysis.riskLevels.map((level) => {
                         const isOptimal =
                           level.percentage ===
                           analysis.optimalStopLoss.percentage;
                         return (
-                          <tr
+                          <TableRow
                             key={level.percentage}
-                            className={`border-t ${
-                              isOptimal ? "bg-green-50" : "hover:bg-gray-50"
-                            } cursor-pointer`}
+                            className={cn(
+                              isOptimal && "bg-green-50 hover:bg-green-100",
+                              "cursor-pointer"
+                            )}
                           >
-                            <td className="px-4 py-2 font-medium">
+                            <TableCell className="font-medium">
                               {level.percentage === 0
                                 ? "真实订单"
                                 : `${level.percentage}%`}
                               {isOptimal && (
-                                <span className="ml-2 bg-green-500 text-white text-xs px-2 py-1 rounded">
+                                <Badge
+                                  variant="default"
+                                  className="ml-2 text-xs"
+                                >
                                   最佳
-                                </span>
+                                </Badge>
                               )}
-                            </td>
-                            <td
-                              className={`px-4 py-2 text-right font-medium ${
+                            </TableCell>
+                            <TableCell
+                              className={cn(
+                                "text-right font-medium",
                                 level.totalProfit > 0
                                   ? "text-green-600"
                                   : level.totalProfit < 0
                                   ? "text-red-600"
                                   : "text-gray-600"
-                              }`}
+                              )}
                             >
                               ${formatNumber(level.totalProfit)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {level.totalTrades}
-                            </td>
-                            <td
-                              className="px-4 py-2 text-right text-green-600 cursor-pointer hover:underline"
+                            </TableCell>
+                            <TableCell
+                              className="text-right text-green-600 cursor-pointer hover:underline"
                               onClick={() => handleRowClick(level, "profit")}
                             >
                               {level.profitTrades}
-                            </td>
-                            <td
-                              className="px-4 py-2 text-right text-red-600 cursor-pointer hover:underline"
+                            </TableCell>
+                            <TableCell
+                              className="text-right text-red-600 cursor-pointer hover:underline"
                               onClick={() => handleRowClick(level, "loss")}
                             >
                               {level.lossTrades}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {formatPercentage(level.winRate)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {level.profitFactor.toFixed(2)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {level.stopLossTrades}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {level.takeProfitTrades}
-                            </td>
-                          </tr>
+                            </TableCell>
+                          </TableRow>
                         );
                       })}
-                    </tbody>
-                  </table>
+                    </TableBody>
+                  </Table>
                 </div>
               </div>
 
@@ -442,53 +456,51 @@ export default function StopLossDialog({
                     止盈对比分析 (固定止损: {tpBaseStopLoss}%)
                   </h3>
                   <div className="border rounded-lg overflow-hidden">
-                    <table className="w-full">
-                      <thead className="bg-gray-50">
-                        <tr>
-                          <th className="px-4 py-2 text-left">止盈水平</th>
-                          <th className="px-4 py-2 text-right">总盈利</th>
-                          <th className="px-4 py-2 text-right">胜率</th>
-                          <th className="px-4 py-2 text-right">止盈触发</th>
-                          <th className="px-4 py-2 text-right">止损触发</th>
-                          <th className="px-4 py-2 text-right">正常出场</th>
-                        </tr>
-                      </thead>
-                      <tbody>
+                    <Table>
+                      <TableHeader>
+                        <TableRow>
+                          <TableHead>止盈水平</TableHead>
+                          <TableHead className="text-right">总盈利</TableHead>
+                          <TableHead className="text-right">胜率</TableHead>
+                          <TableHead className="text-right">止盈触发</TableHead>
+                          <TableHead className="text-right">止损触发</TableHead>
+                          <TableHead className="text-right">正常出场</TableHead>
+                        </TableRow>
+                      </TableHeader>
+                      <TableBody>
                         {tpVariants.map((variant) => (
-                          <tr
-                            key={variant.percentage}
-                            className="border-t hover:bg-gray-50"
-                          >
-                            <td className="px-4 py-2 font-medium">
+                          <TableRow key={variant.percentage}>
+                            <TableCell className="font-medium">
                               {variant.percentage}%
-                            </td>
-                            <td
-                              className={`px-4 py-2 text-right font-medium ${
+                            </TableCell>
+                            <TableCell
+                              className={cn(
+                                "text-right font-medium",
                                 variant.totalProfit > 0
                                   ? "text-green-600"
                                   : variant.totalProfit < 0
                                   ? "text-red-600"
                                   : "text-gray-600"
-                              }`}
+                              )}
                             >
                               ${formatNumber(variant.totalProfit)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {formatPercentage(variant.winRate)}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {variant.takeProfitTrades}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {variant.stopLossTrades}
-                            </td>
-                            <td className="px-4 py-2 text-right">
+                            </TableCell>
+                            <TableCell className="text-right">
                               {variant.normalExitTrades}
-                            </td>
-                          </tr>
+                            </TableCell>
+                          </TableRow>
                         ))}
-                      </tbody>
-                    </table>
+                      </TableBody>
+                    </Table>
                   </div>
                 </div>
               )}

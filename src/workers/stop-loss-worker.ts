@@ -134,9 +134,10 @@ function computeForLevel(
           : entryPrice * (1 - percentage / 100);
         const closeTimeMs = new Date(m.closeTime).getTime();
         let triggered = false;
+
         for (let i = 0; i < m.klineTimestamps.length; i++) {
           const t = m.klineTimestamps[i];
-          // 不再在 closeTime 停止，持续扫描到“最新”K线
+          // 不再在 closeTime 停止，持续扫描到"最新"K线
           if (isLong) {
             if (m.klineLows[i] <= stopLossPrice) {
               triggered = true;

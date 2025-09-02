@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CumulativePnlDialog } from "@/components/charts/cumulative-pnl-dialog";
-import { RiskAnalysisDialog } from "@/components/charts/stop-loss-dialog";
+import StopLossDialog from "@/components/charts/stop-loss-dialog";
 import { TrendingUp, Shield } from "lucide-react";
 
 interface Props {
@@ -79,7 +79,7 @@ export function AnalysisSidebar({
       />
 
       {/* 止损分析弹窗 */}
-      <RiskAnalysisDialog
+      <StopLossDialog
         open={showStopLoss}
         onOpenChange={setShowStopLoss}
         symbol={symbol}
