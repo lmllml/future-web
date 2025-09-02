@@ -134,7 +134,7 @@ interface StopLossAnalysis {
   }>;
 }
 
-export function StopLossDialog({
+export function RiskAnalysisDialog({
   open,
   onOpenChange,
   symbol,

@@ -79,7 +79,7 @@ export function AnalysisSidebar({
       />
 
       {/* 止损分析弹窗 */}
-      <StopLossDialog
+      <RiskAnalysisDialog
         open={showStopLoss}
         onOpenChange={setShowStopLoss}
         symbol={symbol}
