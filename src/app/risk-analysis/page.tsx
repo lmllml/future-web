@@ -67,7 +67,7 @@ export default function RiskAnalysisPage() {
   const stopLossLevels = useMemo(
     () =>
       Array.from(new Set(matrix.map((m) => m.stopLossPercentage))).sort(
-        (a, b) => a - b
+        (a, b) => b - a
       ),
     [matrix]
   );
@@ -132,9 +132,9 @@ export default function RiskAnalysisPage() {
       if (positionSide !== "ALL") params.positionSide = positionSide;
       if (startTime) params.startTime = startTime;
       if (endTime) params.endTime = endTime;
-      const resp = await cryptoApi.listRiskDetails<{ data: RiskDetailRecord[] }>(
-        params
-      );
+      const resp = await cryptoApi.listRiskDetails<{
+        data: RiskDetailRecord[];
+      }>(params);
       setDetailRecords(resp.data || []);
       setDetailOpen(true);
     } catch (e) {
@@ -212,7 +212,9 @@ export default function RiskAnalysisPage() {
           <table className="min-w-[800px] w-full text-sm">
             <thead>
               <tr>
-                <th className="p-2 text-left sticky left-0 bg-white z-10">止损% \ 止盈%</th>
+                <th className="p-2 text-left sticky left-0 bg-white z-10">
+                  止损% \ 止盈%
+                </th>
                 {takeProfitLevels.map((tp) => (
                   <th key={tp} className="p-2 text-right">
                     {tp}%
@@ -223,23 +225,40 @@ export default function RiskAnalysisPage() {
             <tbody>
               {stopLossLevels.map((sl) => (
                 <tr key={sl} className="hover:bg-muted/40">
-                  <td className="p-2 font-medium sticky left-0 bg-white z-10">{sl}%</td>
+                  <td className="p-2 font-medium sticky left-0 bg-white z-10">
+                    {sl}%
+                  </td>
                   {takeProfitLevels.map((tp) => {
                     const cell = cellMap.get(`${sl}|${tp}`);
                     const rp = cell?.realizedPnl ?? 0;
                     const up = cell?.unrealizedPnl ?? 0;
-                    const total = (rp + up) || 0;
-                    const color = total >= 0 ? "text-green-600" : "text-red-600";
+                    const total = rp + up || 0;
+                    const textClass =
+                      total >= 0 ? "text-green-700" : "text-red-700";
+                    const bgClass =
+                      total > 0
+                        ? "bg-green-50"
+                        : total < 0
+                        ? "bg-red-50"
+                        : "bg-gray-50";
                     return (
-                      <td key={tp} className="p-2">
+                      <td key={tp} className="p-1">
                         <button
                           onClick={() => openDetail(sl, tp)}
-                          className={`w-full text-right ${color} hover:underline`}
-                          title={`点击查看明细 (总:${formatNumber(total)} 实现:${formatNumber(rp)} 浮动:${formatNumber(up)})`}
+                          className={`w-full h-full ${bgClass} rounded border border-gray-100 hover:border-gray-300 text-center py-1.5 transition-colors`}
+                          title={`点击查看明细 (总:${formatNumber(
+                            total
+                          )} 实现:${formatNumber(rp)} 浮动:${formatNumber(
+                            up
+                          )})`}
                         >
-                          <div>{formatNumber(total)}</div>
-                          <div className="text-xs text-muted-foreground">
-                            实现 {formatNumber(rp)} / 浮动 {formatNumber(up)}
+                          <div
+                            className={`font-semibold leading-5 ${textClass}`}
+                          >
+                            {formatNumber(total)}
+                          </div>
+                          <div className="text-[10px] text-muted-foreground">
+                            实 {formatNumber(rp)} / 浮 {formatNumber(up)}
                           </div>
                         </button>
                       </td>
@@ -251,7 +270,9 @@ export default function RiskAnalysisPage() {
           </table>
         </div>
       ) : (
-        <div className="text-muted-foreground text-sm">暂无数据，请调整筛选并重新加载。</div>
+        <div className="text-muted-foreground text-sm">
+          暂无数据，请调整筛选并重新加载。
+        </div>
       )}
 
       {/* Detail Dialog */}
@@ -280,21 +301,33 @@ export default function RiskAnalysisPage() {
                 </thead>
                 <tbody>
                   {detailRecords.map((r) => (
-                    <tr key={`${r.roundId}-${r.stopLossPercentage}-${r.takeProfitPercentage}`} className="border-t">
+                    <tr
+                      key={`${r.roundId}-${r.stopLossPercentage}-${r.takeProfitPercentage}`}
+                      className="border-t"
+                    >
                       <td className="p-2 whitespace-nowrap">{r.roundId}</td>
                       <td className="p-2">{r.positionSide}</td>
                       <td className="p-2 whitespace-nowrap">
-                        {new Date(r.openTime).toLocaleString()} → {new Date(r.closeTime).toLocaleString()}
+                        {new Date(r.openTime).toLocaleString()} →{" "}
+                        {new Date(r.closeTime).toLocaleString()}
                       </td>
                       <td className="p-2">{r.quantity.toFixed(4)}</td>
-                      <td className={`p-2 ${r.pnlAmount >= 0 ? "text-green-600" : "text-red-600"}`}>
-                        {r.pnlAmount.toFixed(2)} ({(r.pnlRate * 100).toFixed(2)}%)
+                      <td
+                        className={`p-2 ${
+                          r.pnlAmount >= 0 ? "text-green-600" : "text-red-600"
+                        }`}
+                      >
+                        {r.pnlAmount.toFixed(2)} ({(r.pnlRate * 100).toFixed(2)}
+                        %)
                       </td>
                       <td className="p-2">
-                        {r.isUnfinished ? (r.floatingAmount ?? 0).toFixed(2) : "-"}
+                        {r.isUnfinished
+                          ? (r.floatingAmount ?? 0).toFixed(2)
+                          : "-"}
                       </td>
                       <td className="p-2 text-xs text-muted-foreground">
-                        止损:{r.wouldHitStopLoss ? "✓" : "✗"} / 止盈:{r.wouldHitTakeProfit ? "✓" : "✗"}
+                        止损:{r.wouldHitStopLoss ? "✓" : "✗"} / 止盈:
+                        {r.wouldHitTakeProfit ? "✓" : "✗"}
                       </td>
                     </tr>
                   ))}
@@ -307,5 +340,3 @@ export default function RiskAnalysisPage() {
     </div>
   );
 }
-
-

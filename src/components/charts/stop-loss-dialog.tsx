@@ -134,6 +134,42 @@ interface StopLossAnalysis {
   }>;
 }
 
+// 风险矩阵单元格（服务端返回）
+interface MatrixCell {
+  stopLossPercentage: number;
+  takeProfitPercentage: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalCount: number;
+  unfinishedCount: number;
+}
+
+// 明细记录（服务端返回，用于转换为 TradeDetail 展示）
+interface RiskDetailRecord {
+  symbol: string;
+  exchange: string;
+  market: string;
+  roundId: string;
+  positionSide: "LONG" | "SHORT";
+  stopLossPercentage: number;
+  takeProfitPercentage: number;
+  entryPrice: number;
+  exitPrice: number;
+  finalPrice: number;
+  quantity: number;
+  pnlAmount: number;
+  pnlRate: number;
+  wouldHitStopLoss: boolean;
+  wouldHitTakeProfit: boolean;
+  isUnfinished: boolean;
+  maxDrawdownRate?: number;
+  maxProfitRate?: number;
+  floatingRate?: number;
+  floatingAmount?: number;
+  openTime: string;
+  closeTime: string;
+}
+
 export function RiskAnalysisDialog({
   open,
   onOpenChange,
@@ -159,8 +195,7 @@ export function RiskAnalysisDialog({
   const [sortAsc, setSortAsc] = useState<boolean>(false);
   const [currentTakeProfitPercentage, setCurrentTakeProfitPercentage] =
     useState(takeProfitPercentage);
-  const [currentEnableTakeProfit, setCurrentEnableTakeProfit] =
-    useState(enableTakeProfit);
+  const [currentEnableTakeProfit, setCurrentEnableTakeProfit] = useState(false);
   // 止盈对比：固定一个止损百分比，查看不同止盈下的盈亏
   const [tpBaseStopLoss, setTpBaseStopLoss] = useState<number>(-2.0);
   const [tpVariants, setTpVariants] = useState<
@@ -183,6 +218,106 @@ export function RiskAnalysisDialog({
     }>
   >([]);
 
+  // 止盈止损矩阵
+  const [matrixLoading, setMatrixLoading] = useState<boolean>(false);
+  const [matrix, setMatrix] = useState<MatrixCell[]>([]);
+  const stopLossLevels = useMemo(
+    () =>
+      Array.from(new Set(matrix.map((m) => m.stopLossPercentage))).sort(
+        (a, b) => b - a
+      ),
+    [matrix]
+  );
+  const takeProfitLevels = useMemo(
+    () =>
+      Array.from(new Set(matrix.map((m) => m.takeProfitPercentage))).sort(
+        (a, b) => a - b
+      ),
+    [matrix]
+  );
+  const cellMap = useMemo(() => {
+    const map = new Map<string, MatrixCell>();
+    for (const m of matrix)
+      map.set(`${m.stopLossPercentage}|${m.takeProfitPercentage}`, m);
+    return map;
+  }, [matrix]);
+
+  async function fetchRiskMatrix(): Promise<void> {
+    setMatrixLoading(true);
+    try {
+      const params: Record<string, string | number | boolean> = {
+        symbol,
+        exchange: "binance",
+        market: "futures",
+      };
+      if (positionSide && positionSide !== "ALL")
+        params.positionSide = positionSide;
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+      const resp = await cryptoApi.getRiskMatrix<{ data: MatrixCell[] }>(
+        params
+      );
+      setMatrix(resp.data || []);
+    } catch (e) {
+      console.error("加载风险矩阵失败:", e);
+      setMatrix([]);
+    } finally {
+      setMatrixLoading(false);
+    }
+  }
+
+  async function openMatrixDetail(sl: number, tp: number): Promise<void> {
+    try {
+      const params: Record<string, string | number | boolean> = {
+        symbol,
+        exchange: "binance",
+        market: "futures",
+        stopLossPercentage: sl,
+        takeProfitPercentage: tp,
+        limit: 200,
+      };
+      if (positionSide && positionSide !== "ALL")
+        params.positionSide = positionSide;
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+      const resp = await cryptoApi.listRiskDetails<{
+        data: RiskDetailRecord[];
+      }>(params);
+      const records = resp.data || [];
+      const transformed: TradeDetail[] = records.map((r) => ({
+        roundId: r.roundId,
+        symbol: r.symbol,
+        positionSide: r.positionSide,
+        entryPrice: r.entryPrice,
+        exitPrice: r.exitPrice,
+        quantity: r.quantity,
+        finalPrice: r.finalPrice,
+        pnlAmount: r.pnlAmount,
+        pnlRate: r.pnlRate,
+        originalPnlAmount: r.pnlAmount,
+        wouldHitStopLoss: r.wouldHitStopLoss,
+        wouldHitTakeProfit: r.wouldHitTakeProfit,
+        maxDrawdownRate: r.maxDrawdownRate ?? 0,
+        maxProfitRate: r.maxProfitRate ?? 0,
+        isUnfinished: r.isUnfinished,
+        floatingRate: r.floatingRate,
+        floatingAmount: r.floatingAmount,
+        openTime: r.openTime,
+        closeTime: r.closeTime,
+        openTradeIds: [],
+        closeTradeIds: [],
+      }));
+      setSelectedTrades(transformed);
+      setTradeListTitle(`止损 ${sl}% / 止盈 ${tp}% 明细`);
+      setShowTradeList(true);
+    } catch (e) {
+      console.error("加载矩阵明细失败:", e);
+      setSelectedTrades([]);
+      setTradeListTitle(`止损 ${sl}% / 止盈 ${tp}% 明细`);
+      setShowTradeList(true);
+    }
+  }
+
   // 根据实际交易数据计算最佳止损点
   const calculateStopLoss = async (overrides?: {
     enableTakeProfit?: boolean;
@@ -192,6 +327,61 @@ export function RiskAnalysisDialog({
     setError(null);
 
     try {
+      // 优先尝试使用服务端 API 计算（future 项目）
+      type TakeProfitCmp = {
+        percentage: number;
+        totalProfit: number;
+        totalProfitAmount: number;
+        totalLossAmount: number;
+        winRate: number;
+        totalTrades: number;
+        profitTrades: number;
+        lossTrades: number;
+        breakEvenTrades: number;
+        avgProfit: number;
+        avgLoss: number;
+        profitFactor: number;
+        takeProfitTrades: number;
+        stopLossTrades: number;
+        normalExitTrades: number;
+      };
+      type ApiResponse = {
+        cached?: boolean;
+        analysis: StopLossAnalysis;
+        takeProfitComparison?: TakeProfitCmp[];
+        calculatedAt?: string;
+        analysisId?: string;
+      };
+      try {
+        const resp = await cryptoApi.calculateRiskAnalysis<ApiResponse>({
+          symbol,
+          exchange: "binance",
+          market: "futures",
+          minPnl,
+          maxPnl,
+          minQuantity,
+          maxQuantity,
+          positionSide: positionSide === "ALL" ? undefined : positionSide,
+          startTime,
+          endTime,
+          // 不启用止盈
+          enableTakeProfit: false,
+          baseStopLoss: tpBaseStopLoss,
+        });
+        if (resp && resp.analysis) {
+          setAnalysis(resp.analysis);
+          setTpVariants(resp.takeProfitComparison ?? []);
+          setLoading(false);
+          return; // 已使用服务端结果
+        }
+      } catch (apiErr) {
+        console.warn(
+          "Risk analysis API failed, fallback to local calculation",
+          apiErr
+        );
+        // 继续走本地计算
+      }
+
       // 获取所有符合筛选条件的交易数据
       const response = await cryptoApi.listRoundPnl<{
         data: Array<{
@@ -1687,6 +1877,13 @@ export function RiskAnalysisDialog({
     }
   }, [open]);
 
+  useEffect(() => {
+    if (open) {
+      fetchRiskMatrix();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, symbol, positionSide, startTime, endTime]);
+
   const handleRecalculate = () => {
     setAnalysis(null);
     calculateStopLoss();
@@ -1705,7 +1902,7 @@ export function RiskAnalysisDialog({
           <div className="flex items-center justify-between">
             <DialogTitle className="flex items-center gap-2">
               <Calculator className="w-5 h-5" />
-              最佳止损点分析 - {symbol}
+              最佳止盈止损分析 - {symbol}
             </DialogTitle>
             <div className="flex gap-2 mr-8">
               <Button
@@ -1720,87 +1917,7 @@ export function RiskAnalysisDialog({
             </div>
           </div>
 
-          {/* 止盈设置 */}
-          <div className="flex items-center gap-4 mt-4 p-4 bg-muted/30 rounded-lg">
-            <div className="flex items-center gap-2">
-              <Target className="w-4 h-4 text-green-500" />
-              <label
-                htmlFor="enable-take-profit"
-                className="text-sm font-medium"
-              >
-                启用止盈
-              </label>
-              <input
-                id="enable-take-profit"
-                type="checkbox"
-                checked={currentEnableTakeProfit}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                  setCurrentEnableTakeProfit(e.target.checked);
-                  setAnalysis(null);
-                  // 立即使用 overrides 重新计算，避免状态时序
-                  calculateStopLoss({
-                    enableTakeProfit: e.target.checked,
-                    takeProfitPercentage: currentTakeProfitPercentage,
-                  });
-                }}
-                className="w-4 h-4"
-              />
-            </div>
-
-            {currentEnableTakeProfit && (
-              <div className="flex items-center gap-2">
-                <label htmlFor="take-profit-percentage" className="text-sm">
-                  止盈百分比:
-                </label>
-                <input
-                  id="take-profit-percentage"
-                  type="number"
-                  value={currentTakeProfitPercentage}
-                  onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
-                    const value = parseFloat(e.target.value) || 0;
-                    setCurrentTakeProfitPercentage(value);
-                    setAnalysis(null);
-                    // 输入时不触发重算，避免频繁；在失焦时触发
-                  }}
-                  className="w-20 h-8 text-sm px-2 border border-gray-300 rounded"
-                  min="0.1"
-                  max="100"
-                  step="0.1"
-                />
-                <button
-                  className="text-xs ml-2 px-2 py-1 border rounded hover:bg-muted"
-                  onClick={() => {
-                    // 点击小按钮立即重算（也可换成 onBlur）
-                    calculateStopLoss({
-                      enableTakeProfit: currentEnableTakeProfit,
-                      takeProfitPercentage: currentTakeProfitPercentage,
-                    });
-                  }}
-                >
-                  应用
-                </button>
-                <span className="text-sm text-muted-foreground">%</span>
-              </div>
-            )}
-
-            <div className="text-xs text-muted-foreground space-y-1">
-              <div>
-                {currentEnableTakeProfit
-                  ? `当浮盈达到 ${currentTakeProfitPercentage}% 时自动止盈`
-                  : "未启用止盈，将按原计划出场"}
-              </div>
-              {currentEnableTakeProfit && (
-                <div className="text-blue-600 font-medium">
-                  示例：入场价 $100，止盈 {currentTakeProfitPercentage}% →{" "}
-                  多单在 $
-                  {(100 * (1 + currentTakeProfitPercentage / 100)).toFixed(2)}{" "}
-                  止盈， 空单在 $
-                  {(100 * (1 - currentTakeProfitPercentage / 100)).toFixed(2)}{" "}
-                  止盈
-                </div>
-              )}
-            </div>
-          </div>
+          {/* 移除止盈设置，统一按照不启用止盈计算 */}
         </DialogHeader>
 
         <div className="flex-1 overflow-auto">
@@ -1809,7 +1926,7 @@ export function RiskAnalysisDialog({
               <div className="text-center">
                 <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
                 <p className="text-sm text-muted-foreground">
-                  正在获取K线数据并计算最佳止损点...
+                  正在获取数据并计算最佳止盈止损...
                 </p>
                 <p className="text-xs text-muted-foreground mt-1">
                   基于交易期间的价格波动分析止损触发情况
@@ -1829,11 +1946,11 @@ export function RiskAnalysisDialog({
 
           {analysis && !loading && (
             <div className="space-y-6">
-              {/* 最佳止损点推荐 */}
+              {/* 最佳止盈止损推荐 */}
               <div className="bg-muted/30 rounded-lg p-4">
                 <h3 className="font-semibold mb-3 flex items-center gap-2">
                   <TrendingUp className="w-4 h-4 text-green-500" />
-                  最佳止损点（基于最大总盈利）
+                  最佳止损（基于最大总盈利）
                 </h3>
                 <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
                   <div className="text-center">
@@ -1889,177 +2006,91 @@ export function RiskAnalysisDialog({
                 </div>
               </div>
 
-              {/* 不同风险水平分析 */}
+              {/* 止盈止损矩阵（点击单元格查看明细） */}
               <div>
                 <h3 className="font-semibold mb-3 flex items-center gap-2">
                   <TrendingDown className="w-4 h-4 text-orange-500" />
-                  不同止损水平分析
+                  止盈止损矩阵（单元格为总浮盈=$实现+$浮动）
                 </h3>
-                <div className="overflow-x-auto">
-                  <table className="w-full text-sm">
-                    <thead>
-                      <tr className="border-b">
-                        <th className="text-left p-2">止损%</th>
-                        <th className="text-left p-2">盈利($)</th>
-                        <th className="text-left p-2">胜率</th>
-                        <th className="text-left p-2">总交易</th>
-                        <th className="text-left p-2">盈利次数</th>
-                        <th className="text-left p-2">亏损次数</th>
-                        <th className="text-left p-2">未平单数</th>
-                        <th className="text-left p-2">平均盈利($)</th>
-                        <th className="text-left p-2">平均亏损($)</th>
-                        <th className="text-left p-2">盈亏比</th>
-                        <th className="text-left p-2">止盈次数</th>
-                        <th className="text-left p-2">止损次数</th>
-                        <th className="text-left p-2">正常出场</th>
-                        <th className="text-left p-2">盈利总额($)</th>
-                        <th className="text-left p-2">亏损总额($)</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {analysis.riskLevels.map((level, index) => (
-                        <tr
-                          key={level.percentage}
-                          className={`border-b hover:bg-muted/20 ${
-                            level.percentage ===
-                            analysis.optimalStopLoss.percentage
-                              ? "bg-blue-50 dark:bg-blue-950/20 font-semibold"
-                              : level.percentage === 0
-                              ? "bg-green-50 dark:bg-green-950/20"
-                              : ""
-                          }`}
-                        >
-                          <td className="p-2 font-medium">
-                            {level.percentage === 0
-                              ? "真实订单"
-                              : `${level.percentage}%`}
-                          </td>
-                          <td className="p-2">
-                            <span
-                              className={`font-semibold ${
-                                level.totalProfit > 0
-                                  ? "text-green-600"
-                                  : level.totalProfit < 0
-                                  ? "text-red-600"
-                                  : "text-gray-600"
-                              }`}
+                {matrixLoading ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    矩阵加载中...
+                  </div>
+                ) : takeProfitLevels.length > 0 && stopLossLevels.length > 0 ? (
+                  <div className="overflow-x-auto overflow-y-visible bg-white rounded-lg shadow-lg border border-gray-200 max-w-full">
+                    <table className="min-w-[1200px] w-full text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-gray-300 bg-gradient-to-r from-blue-50 to-indigo-50">
+                          <th className="text-left p-3 sticky left-0 bg-gradient-to-r from-blue-100 to-indigo-100 z-10 font-bold text-gray-800 border-r border-gray-200"></th>
+                          {takeProfitLevels.map((tp) => (
+                            <th
+                              key={tp}
+                              className="p-3 text-center font-semibold text-gray-700 hover:bg-blue-100 transition-colors duration-200"
                             >
-                              ${level.totalProfit.toLocaleString()}
-                            </span>
-                          </td>
-                          <td className="p-2">
-                            <span
-                              className={`${
-                                level.winRate >= 60
-                                  ? "text-green-600"
-                                  : level.winRate >= 50
-                                  ? "text-yellow-600"
-                                  : "text-red-600"
-                              }`}
-                            >
-                              {level.winRate}%
-                            </span>
-                          </td>
-                          <td className="p-2">{level.totalTrades}</td>
-                          <td className="p-2">
-                            <button
-                              className="text-green-600 hover:text-green-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-green-50 transition-all"
-                              onClick={() => {
-                                setSelectedTrades(level.profitTradeDetails);
-                                setTradeListTitle(
-                                  `${
-                                    level.percentage === 0
-                                      ? "真实订单"
-                                      : `${level.percentage}%止损`
-                                  } - 盈利交易 (${level.profitTrades}笔)`
-                                );
-                                setShowTradeList(true);
-                              }}
-                            >
-                              {level.profitTrades}
-                            </button>
-                          </td>
-                          <td className="p-2">
-                            <button
-                              className="text-red-600 hover:text-red-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-red-50 transition-all"
-                              onClick={() => {
-                                setSelectedTrades(level.lossTradeDetails);
-                                setTradeListTitle(
-                                  `${
-                                    level.percentage === 0
-                                      ? "真实订单"
-                                      : `${level.percentage}%止损`
-                                  } - 亏损交易 (${level.lossTrades}笔)`
-                                );
-                                setShowTradeList(true);
-                              }}
-                            >
-                              {level.lossTrades}
-                            </button>
-                          </td>
-                          <td className="p-2">
-                            <button
-                              className="text-blue-600 hover:text-blue-800 underline decoration-dotted hover:decoration-solid cursor-pointer font-medium px-1 py-0.5 rounded hover:bg-blue-50 transition-all"
-                              onClick={() => {
-                                setSelectedTrades(level.breakEvenTradeDetails);
-                                setTradeListTitle(
-                                  `${
-                                    level.percentage === 0
-                                      ? "真实订单"
-                                      : `${level.percentage}%止损`
-                                  } - 未平单 (${level.breakEvenTrades}笔)`
-                                );
-                                setShowTradeList(true);
-                              }}
-                            >
-                              {level.breakEvenTrades}
-                            </button>
-                          </td>
-                          <td className="p-2 text-green-600">
-                            ${level.avgProfit.toLocaleString()}
-                          </td>
-                          <td className="p-2 text-red-600">
-                            ${level.avgLoss.toLocaleString()}
-                          </td>
-                          <td className="p-2">
-                            <span
-                              className={`${
-                                level.profitFactor >= 1.5
-                                  ? "text-green-600"
-                                  : level.profitFactor >= 1.2
-                                  ? "text-yellow-600"
-                                  : "text-red-600"
-                              }`}
-                            >
-                              {level.profitFactor}
-                            </span>
-                          </td>
-                          <td className="p-2">
-                            <span className="text-green-600 font-medium">
-                              {level.takeProfitTrades}
-                            </span>
-                          </td>
-                          <td className="p-2">
-                            <span className="text-red-600 font-medium">
-                              {level.stopLossTrades}
-                            </span>
-                          </td>
-                          <td className="p-2">
-                            <span className="text-gray-600 font-medium">
-                              {level.normalExitTrades}
-                            </span>
-                          </td>
-                          <td className="p-2 text-green-600">
-                            ${level.totalProfitAmount.toLocaleString()}
-                          </td>
-                          <td className="p-2 text-red-600">
-                            -${level.totalLossAmount.toLocaleString()}
-                          </td>
+                              <span className="text-sm font-bold text-green-600">
+                                {tp}%
+                              </span>
+                            </th>
+                          ))}
                         </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
+                      </thead>
+                      <tbody>
+                        {stopLossLevels.map((sl) => (
+                          <tr
+                            key={sl}
+                            className="hover:bg-muted/20 border-b border-gray-100"
+                          >
+                            <td className="p-3 font-semibold sticky left-0 bg-gradient-to-r from-red-50 to-orange-50 z-10 border-r border-gray-200">
+                              <span className="text-sm font-bold text-red-600">
+                                {sl}%
+                              </span>
+                            </td>
+                            {takeProfitLevels.map((tp) => {
+                              const cell = cellMap.get(`${sl}|${tp}`);
+                              const rp = cell?.realizedPnl ?? 0;
+                              const up = cell?.unrealizedPnl ?? 0;
+                              const total = rp + up || 0;
+                              const textClass =
+                                total >= 0 ? "text-green-700" : "text-red-700";
+                              const bgClass =
+                                total > 0
+                                  ? "bg-green-50"
+                                  : total < 0
+                                  ? "bg-red-50"
+                                  : "bg-gray-50";
+                              return (
+                                <td key={tp} className="p-1">
+                                  <button
+                                    onClick={() => openMatrixDetail(sl, tp)}
+                                    className={`w-full h-full ${bgClass} rounded-lg border border-gray-200 hover:border-gray-400 hover:shadow-md text-center py-2 px-2 transition-all duration-200 transform hover:scale-105`}
+                                    title={`点击查看明细 (总:${total.toFixed(
+                                      2
+                                    )} 实现:${rp.toFixed(2)} 浮动:${up.toFixed(
+                                      2
+                                    )})`}
+                                  >
+                                    <div
+                                      className={`font-bold text-sm leading-5 ${textClass}`}
+                                    >
+                                      {total.toFixed(2)}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-0.5">
+                                      实 {rp.toFixed(2)} 浮 {up.toFixed(2)}
+                                    </div>
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-muted-foreground text-sm">
+                    暂无矩阵数据。
+                  </div>
+                )}
               </div>
 
               {/* 分析结果说明 */}

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CumulativePnlDialog } from "@/components/charts/cumulative-pnl-dialog";
-import { StopLossDialog } from "@/components/charts/stop-loss-dialog";
+import { RiskAnalysisDialog } from "@/components/charts/stop-loss-dialog";
 import { TrendingUp, Shield } from "lucide-react";
 
 interface Props {
@@ -51,7 +51,7 @@ export function AnalysisSidebar({
             累计盈亏趋势
           </Button>
 
-          {/* 计算最佳止损点 */}
+          {/* 最佳止盈止损分析 */}
           <Button
             variant="outline"
             className="w-full justify-start"
@@ -59,7 +59,7 @@ export function AnalysisSidebar({
             disabled={loading}
           >
             <Shield className="w-4 h-4 mr-2" />
-            计算最佳止损点
+            最佳止盈止损分析
           </Button>
         </div>
       </div>
