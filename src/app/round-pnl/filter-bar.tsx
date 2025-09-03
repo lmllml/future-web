@@ -151,6 +151,24 @@ export function FilterBar({ defaultSymbol }: Props) {
     setStartTime(start);
     setEndTime(end);
   }
+  function set7Days() {
+    const [start] = getTimeRangeWith8Hour(-7);
+    const [_, end] = getTimeRangeWith8Hour(0);
+    setStartTime(start);
+    setEndTime(end);
+  }
+  function set14Days() {
+    const [start] = getTimeRangeWith8Hour(-14);
+    const [_, end] = getTimeRangeWith8Hour(0);
+    setStartTime(start);
+    setEndTime(end);
+  }
+  function set30Days() {
+    const [start] = getTimeRangeWith8Hour(-30);
+    const [_, end] = getTimeRangeWith8Hour(0);
+    setStartTime(start);
+    setEndTime(end);
+  }
 
   return (
     <div className="flex flex-wrap items-end gap-2">
@@ -281,6 +299,33 @@ export function FilterBar({ defaultSymbol }: Props) {
             className="h-9 px-3 text-xs"
           >
             今天
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={set7Days}
+            disabled={isPending}
+            className="h-9 px-3 text-xs"
+          >
+            近7天
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={set14Days}
+            disabled={isPending}
+            className="h-9 px-3 text-xs"
+          >
+            近14天
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={set30Days}
+            disabled={isPending}
+            className="h-9 px-3 text-xs"
+          >
+            近30天
           </Button>
         </div>
       </div>

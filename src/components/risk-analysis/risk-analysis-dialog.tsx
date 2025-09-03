@@ -11,6 +11,7 @@ interface MatrixItem {
   unrealizedPnl: number;
   totalCount: number;
   unfinishedCount: number;
+  winRate: number;
 }
 
 // 矩阵数据结构类型
@@ -50,7 +51,7 @@ export default function RiskAnalysisDialog({
   const [data, setData] = useState<RiskMatrix | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  
+
   // 交易详情弹框状态
   const [tradesDialogOpen, setTradesDialogOpen] = useState(false);
   const [selectedCell, setSelectedCell] = useState<{
@@ -128,8 +129,8 @@ export default function RiskAnalysisDialog({
           )}
 
           {data && !loading && !error && (
-            <RiskMatrixTable 
-              matrix={data.matrix} 
+            <RiskMatrixTable
+              matrix={data.matrix}
               onCellClick={(stopLoss, takeProfit) => {
                 setSelectedCell({ stopLoss, takeProfit });
                 setTradesDialogOpen(true);
@@ -138,7 +139,7 @@ export default function RiskAnalysisDialog({
           )}
         </div>
       </DialogContent>
-      
+
       {/* 交易详情弹框 */}
       {selectedCell && (
         <RiskAnalysisTradesDialog
@@ -229,7 +230,7 @@ function RiskMatrixTable({
                 key={takeProfit}
                 className="border border-gray-300 p-2 bg-gray-100 font-semibold min-w-[120px]"
               >
-                {takeProfit === 0 ? `真实订单` : `止盈 ${takeProfit}%`}
+                {takeProfit === 0 ? `真实止盈` : `止盈 ${takeProfit}%`}
               </th>
             ))}
           </tr>
@@ -238,7 +239,7 @@ function RiskMatrixTable({
           {stopLossLevels.map((stopLoss) => (
             <tr key={stopLoss}>
               <td className="border border-gray-300 p-2 bg-gray-50 font-semibold">
-                {stopLoss === 0 ? `真实订单` : `止损 ${stopLoss}%`}
+                {stopLoss === 0 ? `真实止损` : `止损 ${stopLoss}%`}
               </td>
               {takeProfitLevels.map((takeProfit) => {
                 const item = matrix[stopLoss]?.[takeProfit];
@@ -254,23 +255,28 @@ function RiskMatrixTable({
                 }
 
                 const style = getCellStyle(item);
-
                 return (
                   <td
                     key={takeProfit}
                     className="border border-gray-300 p-2 text-center text-xs cursor-pointer hover:opacity-80 transition-opacity"
                     style={style}
                     onClick={() => onCellClick?.(stopLoss, takeProfit)}
-                    title={`点击查看 ${stopLoss === 0 ? '真实订单' : `止损${stopLoss}%`} × ${takeProfit === 0 ? '真实订单' : `止盈${takeProfit}%`} 的详细交易`}
+                    title={`点击查看 ${
+                      stopLoss === 0 ? "真实止损" : `止损${stopLoss}%`
+                    } × ${
+                      takeProfit === 0 ? "真实止盈" : `止盈${takeProfit}%`
+                    } 的详细交易`}
                   >
-                                          <div
-                        className="text-gray-600 text-lg font-semibold"
-                        style={{ color: style.color || "inherit" }}
-                      >
-                        {formatNumber(item.realizedPnl)}
-                        <br />
-                        {formatNumber(item.unrealizedPnl)}
-                      </div>
+                    <div
+                      className="text-gray-600 text-lg font-semibold"
+                      style={{ color: style.color || "inherit" }}
+                    >
+                      {formatNumber(item.realizedPnl)}
+                      <br />
+                      {formatNumber(item.unrealizedPnl)}
+                      <br />
+                      {formatNumber(item.winRate)}%
+                    </div>
                   </td>
                 );
               })}

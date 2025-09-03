@@ -108,7 +108,19 @@ export default function RiskAnalysisTradesDialog({
     if (open) {
       fetchTradesData();
     }
-  }, [open, symbol, stopLossPercentage, takeProfitPercentage, startTime, endTime, minPnl, maxPnl, minQuantity, maxQuantity, positionSide]);
+  }, [
+    open,
+    symbol,
+    stopLossPercentage,
+    takeProfitPercentage,
+    startTime,
+    endTime,
+    minPnl,
+    maxPnl,
+    minQuantity,
+    maxQuantity,
+    positionSide,
+  ]);
 
   // 格式化数字
   const formatNumber = (num: number, decimals = 2) => {
@@ -125,8 +137,10 @@ export default function RiskAnalysisTradesDialog({
 
   // 获取策略标题
   const getStrategyTitle = () => {
-    const slTitle = stopLossPercentage === 0 ? "真实订单" : `止损 ${stopLossPercentage}%`;
-    const tpTitle = takeProfitPercentage === 0 ? "真实订单" : `止盈 ${takeProfitPercentage}%`;
+    const slTitle =
+      stopLossPercentage === 0 ? "真实订单" : `止损 ${stopLossPercentage}%`;
+    const tpTitle =
+      takeProfitPercentage === 0 ? "真实订单" : `止盈 ${takeProfitPercentage}%`;
     return `${slTitle} × ${tpTitle}`;
   };
 
@@ -135,10 +149,11 @@ export default function RiskAnalysisTradesDialog({
     if (data.length === 0) return null;
 
     const totalPnl = data.reduce((sum, trade) => sum + trade.pnlAmount, 0);
-    const profitTrades = data.filter(trade => trade.pnlAmount > 0);
-    const lossTrades = data.filter(trade => trade.pnlAmount < 0);
-    const unfinishedTrades = data.filter(trade => !trade.isFinished);
-    const winRate = data.length > 0 ? (profitTrades.length / data.length) * 100 : 0;
+    const profitTrades = data.filter((trade) => trade.pnlAmount > 0);
+    const lossTrades = data.filter((trade) => trade.pnlAmount < 0);
+    const unfinishedTrades = data.filter((trade) => !trade.isFinished);
+    const winRate =
+      data.length > 0 ? (profitTrades.length / data.length) * 100 : 0;
 
     return {
       totalTrades: data.length,
@@ -171,17 +186,27 @@ export default function RiskAnalysisTradesDialog({
                 <div className="text-sm text-gray-600">总交易数</div>
               </div>
               <div className="text-center">
-                <div className={`text-2xl font-bold ${stats.totalPnl >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+                <div
+                  className={`text-2xl font-bold ${
+                    stats.totalPnl >= 0 ? "text-green-600" : "text-red-600"
+                  }`}
+                >
                   {formatNumber(stats.totalPnl)}
                 </div>
                 <div className="text-sm text-gray-600">总盈亏</div>
               </div>
               <div className="text-center">
-                <div className="text-2xl font-bold text-green-600">{stats.profitTrades}</div>
+                <div className="text-2xl font-bold text-green-600">
+                  {stats.profitTrades}
+                </div>
                 <div className="text-sm text-gray-600">盈利交易</div>
               </div>
               <div className="text-center">
-                <div className={`text-2xl font-bold ${stats.winRate >= 50 ? 'text-green-600' : 'text-red-600'}`}>
+                <div
+                  className={`text-2xl font-bold ${
+                    stats.winRate >= 50 ? "text-green-600" : "text-red-600"
+                  }`}
+                >
                   {formatNumber(stats.winRate, 1)}%
                 </div>
                 <div className="text-sm text-gray-600">胜率</div>
@@ -220,37 +245,70 @@ export default function RiskAnalysisTradesDialog({
                 >
                   <div className="flex justify-between items-start mb-2">
                     <div className="flex items-center gap-2">
-                      <Badge variant={trade.positionSide === "LONG" ? "default" : "secondary"}>
-                        {trade.positionSide}
+                      <Badge
+                        variant={
+                          trade.positionSide === "LONG"
+                            ? "default"
+                            : "secondary"
+                        }
+                      >
+                        {trade.positionSide === "LONG" ? "多单" : "空单"}
                       </Badge>
                       <span className="font-mono text-sm">{trade.roundId}</span>
                       {!trade.isFinished && (
-                        <Badge variant="outline" className="text-orange-600 border-orange-200">
+                        <Badge
+                          variant="outline"
+                          className="text-orange-600 border-orange-200"
+                        >
                           <Clock className="w-3 h-3 mr-1" />
                           未完成
                         </Badge>
                       )}
                     </div>
-                    <div className={`text-lg font-bold ${trade.pnlAmount >= 0 ? 'text-green-600' : 'text-red-600'}`}>
-                      {trade.pnlAmount >= 0 ? '+' : ''}{formatNumber(trade.pnlAmount)}
+                    <div
+                      className={`text-lg font-bold ${
+                        trade.pnlAmount >= 0 ? "text-green-600" : "text-red-600"
+                      }`}
+                    >
+                      {trade.pnlAmount >= 0 ? "+" : ""}
+                      {formatNumber(trade.pnlAmount)}
                       <span className="text-sm ml-1">
-                        ({trade.pnlRate >= 0 ? '+' : ''}{formatNumber(trade.pnlRate, 2)}%)
+                        ({trade.pnlRate >= 0 ? "+" : ""}
+                        {formatNumber(trade.pnlRate, 2)}%)
                       </span>
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
+                  <div className="grid grid-cols-2 md:grid-cols-6 gap-4 text-sm">
                     <div>
                       <span className="text-gray-600">开仓价:</span>
-                      <span className="ml-1 font-mono">{formatNumber(trade.entryPrice, 4)}</span>
+                      <span className="ml-1 font-mono">
+                        {formatNumber(trade.entryPrice, 4)}
+                      </span>
                     </div>
                     <div>
                       <span className="text-gray-600">平仓价:</span>
-                      <span className="ml-1 font-mono">{formatNumber(trade.exitPrice, 4)}</span>
+                      <span className="ml-1 font-mono">
+                        {formatNumber(trade.finalPrice, 4)}
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600">盈亏率(%):</span>
+                      <span className="ml-1 font-mono">
+                        {formatNumber(trade.pnlRate, 2)}%
+                      </span>
+                    </div>
+                    <div>
+                      <span className="text-gray-600">原平仓价:</span>
+                      <span className="ml-1 font-mono">
+                        {formatNumber(trade.exitPrice, 4)}
+                      </span>
                     </div>
                     <div>
                       <span className="text-gray-600">数量:</span>
-                      <span className="ml-1 font-mono">{formatNumber(trade.quantity, 4)}</span>
+                      <span className="ml-1 font-mono">
+                        {formatNumber(trade.quantity, 4)}
+                      </span>
                     </div>
                     <div className="flex items-center gap-2">
                       {trade.wouldHitStopLoss && (
@@ -265,12 +323,13 @@ export default function RiskAnalysisTradesDialog({
                           止盈
                         </span>
                       )}
-                      {trade.maxDrawdownRate && trade.maxDrawdownRate < -0.05 && (
-                        <span className="text-orange-600 flex items-center">
-                          <AlertTriangle className="w-3 h-3 mr-1" />
-                          深度回撤
-                        </span>
-                      )}
+                      {trade.maxDrawdownRate &&
+                        trade.maxDrawdownRate < -0.05 && (
+                          <span className="text-orange-600 flex items-center">
+                            <AlertTriangle className="w-3 h-3 mr-1" />
+                            深度回撤
+                          </span>
+                        )}
                     </div>
                   </div>
 
@@ -281,7 +340,9 @@ export default function RiskAnalysisTradesDialog({
                     </div>
                     <div>
                       <span className="text-gray-600">平仓时间:</span>
-                      <span className="ml-1">{formatTime(trade.closeTime)}</span>
+                      <span className="ml-1">
+                        {formatTime(trade.closeTime)}
+                      </span>
                     </div>
                   </div>
                 </div>
