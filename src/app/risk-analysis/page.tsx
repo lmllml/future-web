@@ -37,7 +37,7 @@ interface RiskDetailRecord {
   pnlRate: number;
   wouldHitStopLoss: boolean;
   wouldHitTakeProfit: boolean;
-  isUnfinished: boolean;
+  isFinished: boolean;
   maxDrawdownRate?: number;
   maxProfitRate?: number;
   floatingRate?: number;
@@ -322,9 +322,9 @@ export default function RiskAnalysisPage() {
                         %)
                       </td>
                       <td className="p-2">
-                        {r.isUnfinished
-                          ? (r.floatingAmount ?? 0).toFixed(2)
-                          : "-"}
+                        {r.isFinished
+                          ? "-"
+                          : (r.floatingAmount ?? 0).toFixed(2)}
                       </td>
                       <td className="p-2 text-xs text-muted-foreground">
                         止损:{r.wouldHitStopLoss ? "✓" : "✗"} / 止盈:

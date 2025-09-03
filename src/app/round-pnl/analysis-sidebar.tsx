@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CumulativePnlDialog } from "@/components/charts/cumulative-pnl-dialog";
-import RiskAnalysisDialog from "@/components/charts/risk-analysis-dialog";
+import RiskAnalysisDialog from "@/components/risk-analysis/risk-analysis-dialog";
 import { TrendingUp, Shield } from "lucide-react";
 
 interface Props {

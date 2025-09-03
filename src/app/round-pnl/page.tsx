@@ -5,6 +5,7 @@ import { FilterBar } from "./filter-bar";
 import { RoundList } from "./round-list";
 import { AnalysisSidebar } from "./analysis-sidebar";
 import { CacheStatus } from "@/components/cache-status";
+import { KlineDebugger } from "@/components/debug/kline-debugger";
 import { klineCacheService } from "@/lib/kline-cache";
 
 export default function RoundPnlPage({
@@ -17,7 +18,7 @@ export default function RoundPnlPage({
     minQuantity?: string;
     maxQuantity?: string;
     sort?: string;
-    positionSide?: string;
+    positionSide?: "LONG" | "SHORT";
     startTime?: string;
     endTime?: string;
   };
@@ -129,6 +130,7 @@ export default function RoundPnlPage({
 
       {/* 缓存状态组件 */}
       <CacheStatus />
+      <KlineDebugger />
     </div>
   );
 }

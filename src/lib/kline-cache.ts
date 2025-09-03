@@ -698,6 +698,20 @@ class KlineCacheService {
   }
 
   /**
+   * 强制重置缓存服务到初始状态
+   */
+  forceReset(): void {
+    this.cache.clear();
+    this.inflightRequests.clear();
+    this.datasetEndTime.clear();
+    this.setOfflineMode(false);
+    this.stopSchedulers();
+    this.startCleanupScheduler();
+    this.startRefreshScheduler();
+    console.log("K线缓存服务已强制重置");
+  }
+
+  /**
    * 销毁缓存服务
    */
   destroy(): void {
@@ -712,6 +726,8 @@ class KlineCacheService {
     totalEntries: number;
     totalDataPoints: number;
     memoryUsageEstimate: string;
+    offlineMode: boolean;
+    inflightRequests: number;
   } {
     let totalDataPoints = 0;
     for (const entry of this.cache.values()) {
@@ -726,6 +742,8 @@ class KlineCacheService {
       totalEntries: this.cache.size,
       totalDataPoints,
       memoryUsageEstimate: `${memoryMB} MB`,
+      offlineMode: this.offlineMode,
+      inflightRequests: this.inflightRequests.size,
     };
   }
 
