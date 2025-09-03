@@ -10,7 +10,7 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 
-type PositionSide = "LONG" | "SHORT" | "ALL";
+type PositionSide = "LONG" | "SHORT";
 
 interface MatrixCell {
   stopLossPercentage: number;
@@ -57,7 +57,9 @@ export default function RiskAnalysisPage() {
   const [symbol, setSymbol] = useState<string>("ETHUSDC");
   const [exchange, setExchange] = useState<string>("binance");
   const [market, setMarket] = useState<string>("futures");
-  const [positionSide, setPositionSide] = useState<PositionSide>("ALL");
+  const [positionSide, setPositionSide] = useState<PositionSide | undefined>(
+    undefined
+  );
   const [startTime, setStartTime] = useState<string>("");
   const [endTime, setEndTime] = useState<string>("");
 
@@ -100,7 +102,7 @@ export default function RiskAnalysisPage() {
         exchange,
         market,
       };
-      if (positionSide !== "ALL") params.positionSide = positionSide;
+      if (positionSide) params.positionSide = positionSide;
       if (startTime) params.startTime = startTime;
       if (endTime) params.endTime = endTime;
 
@@ -129,7 +131,7 @@ export default function RiskAnalysisPage() {
         takeProfitPercentage: tp,
         limit: 200,
       };
-      if (positionSide !== "ALL") params.positionSide = positionSide;
+      if (positionSide) params.positionSide = positionSide;
       if (startTime) params.startTime = startTime;
       if (endTime) params.endTime = endTime;
       const resp = await cryptoApi.listRiskDetails<{
@@ -181,7 +183,6 @@ export default function RiskAnalysisPage() {
           onChange={(e) => setPositionSide(e.target.value as PositionSide)}
           className="border rounded px-2 py-1"
         >
-          <option value="ALL">ALL</option>
           <option value="LONG">LONG</option>
           <option value="SHORT">SHORT</option>
         </select>

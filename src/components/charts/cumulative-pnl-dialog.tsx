@@ -20,7 +20,7 @@ interface Props {
   maxPnl?: number;
   minQuantity?: number;
   maxQuantity?: number;
-  positionSide?: "LONG" | "SHORT" | "ALL";
+  positionSide?: "LONG" | "SHORT";
   startTime?: string;
   endTime?: string;
 }
@@ -63,7 +63,7 @@ export function CumulativePnlDialog({
           symbol,
           exchange: "binance",
           market: "futures",
-          positionSide: positionSide === "ALL" ? undefined : positionSide,
+          positionSide,
           minPnl,
           maxPnl,
           minQuantity,

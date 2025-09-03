@@ -14,7 +14,7 @@ interface Props {
   minQuantity?: number;
   maxQuantity?: number;
   sort?: string;
-  positionSide?: "LONG" | "SHORT" | "ALL";
+  positionSide?: "LONG" | "SHORT";
   startTime?: string;
   endTime?: string;
 }
@@ -289,7 +289,7 @@ export function RoundList({
   minQuantity,
   maxQuantity,
   sort = "time-desc",
-  positionSide = "ALL",
+  positionSide,
   startTime,
   endTime,
 }: Props) {
@@ -356,7 +356,7 @@ export function RoundList({
         sort,
         limit: 20,
         offset,
-        positionSide: positionSide === "ALL" ? undefined : positionSide,
+        positionSide,
         startTime,
         endTime,
       });
@@ -422,7 +422,7 @@ export function RoundList({
         sort,
         limit: 20,
         offset: 0, // 强制从 0 开始
-        positionSide: positionSide === "ALL" ? undefined : positionSide,
+        positionSide,
         startTime,
         endTime,
       });

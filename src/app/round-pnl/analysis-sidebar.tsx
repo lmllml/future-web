@@ -3,10 +3,12 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { CumulativePnlDialog } from "@/components/charts/cumulative-pnl-dialog";
-import StopLossDialog from "@/components/charts/stop-loss-dialog";
+import RiskAnalysisDialog from "@/components/charts/risk-analysis-dialog";
 import { TrendingUp, Shield } from "lucide-react";
 
 interface Props {
+  exchange: string;
+  market: string;
   symbol: string;
   loading?: boolean;
   // 筛选参数，用于API调用
@@ -14,12 +16,14 @@ interface Props {
   maxPnl?: number;
   minQuantity?: number;
   maxQuantity?: number;
-  positionSide?: "LONG" | "SHORT" | "ALL";
+  positionSide?: "LONG" | "SHORT";
   startTime?: string;
   endTime?: string;
 }
 
 export function AnalysisSidebar({
+  exchange,
+  market,
   symbol,
   loading,
   minPnl,
@@ -31,7 +35,7 @@ export function AnalysisSidebar({
   endTime,
 }: Props) {
   const [showCumulativePnl, setShowCumulativePnl] = useState(false);
-  const [showStopLoss, setShowStopLoss] = useState(false);
+  const [showRiskAnalysis, setShowRiskAnalysis] = useState(false);
 
   return (
     <div className="w-64 flex-shrink-0">
@@ -55,7 +59,7 @@ export function AnalysisSidebar({
           <Button
             variant="outline"
             className="w-full justify-start"
-            onClick={() => setShowStopLoss(true)}
+            onClick={() => setShowRiskAnalysis(true)}
             disabled={loading}
           >
             <Shield className="w-4 h-4 mr-2" />
@@ -78,10 +82,12 @@ export function AnalysisSidebar({
         endTime={endTime}
       />
 
-      {/* 止损分析弹窗 */}
-      <StopLossDialog
-        open={showStopLoss}
-        onOpenChange={setShowStopLoss}
+      {/* 最佳止盈止损分析弹窗 */}
+      <RiskAnalysisDialog
+        open={showRiskAnalysis}
+        onOpenChange={setShowRiskAnalysis}
+        exchange={exchange}
+        market={market}
         symbol={symbol}
         minPnl={minPnl}
         maxPnl={maxPnl}

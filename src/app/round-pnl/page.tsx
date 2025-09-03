@@ -33,11 +33,7 @@ export default function RoundPnlPage({
     typeof searchParams.sort === "string" && searchParams.sort
       ? searchParams.sort
       : "time-desc";
-  const positionSide =
-    searchParams.positionSide === "LONG" ||
-    searchParams.positionSide === "SHORT"
-      ? searchParams.positionSide
-      : "ALL";
+  const positionSide = searchParams.positionSide;
 
   const startTime =
     searchParams.startTime && searchParams.startTime !== ""
@@ -118,6 +114,8 @@ export default function RoundPnlPage({
 
         {/* 分析侧边栏 */}
         <AnalysisSidebar
+          exchange="binance"
+          market="futures"
           symbol={symbol}
           minPnl={minPnl}
           maxPnl={maxPnl}

@@ -19,7 +19,7 @@ export function FilterBar({ defaultSymbol }: Props) {
     minQuantity: parseAsString.withDefault(""),
     maxQuantity: parseAsString.withDefault(""),
     sort: parseAsString.withDefault("time-desc"),
-    positionSide: parseAsString.withDefault("ALL"),
+    positionSide: parseAsString.withDefault(""),
     startTime: parseAsString.withDefault(""),
     endTime: parseAsString.withDefault(""),
   });
@@ -50,7 +50,7 @@ export function FilterBar({ defaultSymbol }: Props) {
   const [minQuantity, setMinQuantity] = useState<string>(q.minQuantity ?? "");
   const [maxQuantity, setMaxQuantity] = useState<string>(q.maxQuantity ?? "");
   const [sort, setSort] = useState(q.sort || "time-desc");
-  const [positionSide, setPositionSide] = useState(q.positionSide || "ALL");
+  const [positionSide, setPositionSide] = useState(q.positionSide);
   const [startTime, setStartTime] = useState<string>(
     isoToLocalInput(q.startTime)
   );
@@ -82,7 +82,7 @@ export function FilterBar({ defaultSymbol }: Props) {
     setMinQuantity("");
     setMaxQuantity("");
     setSort("time-desc");
-    setPositionSide("ALL");
+    setPositionSide("");
     setStartTime("");
     setEndTime("");
     startTransition(async () => {
@@ -93,7 +93,7 @@ export function FilterBar({ defaultSymbol }: Props) {
         minQuantity: "",
         maxQuantity: "",
         sort: "time-desc",
-        positionSide: "ALL",
+        positionSide: "",
         startTime: "",
         endTime: "",
       });
@@ -216,7 +216,7 @@ export function FilterBar({ defaultSymbol }: Props) {
           className="h-9 w-24 rounded border px-2 text-sm"
           disabled={isPending}
         >
-          <option value="ALL">全部</option>
+          <option value="">全部</option>
           <option value="LONG">多单</option>
           <option value="SHORT">空单</option>
         </select>
