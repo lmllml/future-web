@@ -58,3 +58,6 @@ export interface TradeData {
   reduceOnly?: boolean;
   tradeType?: string;
 }
+
+// 重新导出 backtest 相关类型
+export * from "./types/backtest";

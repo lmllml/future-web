@@ -34,7 +34,7 @@ interface Props {
   endTime?: string;
 }
 
-export default function RiskAnalysisDialog({
+export function RiskAnalysisDialog({
   symbol, // 币种
   exchange, // 交易所
   market, // 市场

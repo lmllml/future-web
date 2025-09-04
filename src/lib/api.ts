@@ -89,4 +89,10 @@ export const cryptoApi = {
     getCryptoJson<T>("/risk-details", params),
   calculateRiskAnalysis: <T>(body: Record<string, unknown>) =>
     postCryptoJson<T>("/risk-analysis/calculate", body),
+  
+  // Backtest APIs
+  listBacktests: <T>(params: FetchParams) =>
+    getCryptoJson<T>("/backtest/results", params),
+  getBacktestResult: <T>(id: string) =>
+    getCryptoJson<T>(`/backtest/results/${id}`),
 };
