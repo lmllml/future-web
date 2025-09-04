@@ -1,0 +1,2442 @@
+"use client";
+
+import { useState, useEffect, useMemo } from "react";
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Button } from "@/components/ui/button";
+
+import {
+  Loader2,
+  TrendingDown,
+  TrendingUp,
+  Calculator,
+  ArrowUp,
+  ArrowDown,
+  ChevronsUpDown,
+  Target,
+} from "lucide-react";
+import { cryptoApi } from "@/lib/api";
+import {
+  klineCacheService,
+  type KlineData as CachedKlineData,
+} from "@/lib/kline-cache";
+import { KlineDialog } from "@/components/charts/kline-dialog";
+// Worker 用于并行计算不同止损等级
+// @ts-ignore - bundled by Next/webpack
+// Web Worker 创建方法（Next 推荐方式）
+// 使用相对路径 + import.meta.url 以便打包
+function createStopLossWorker(): Worker {
+  return new Worker(
+    new URL("../../workers/stop-loss-worker.ts", import.meta.url),
+    { type: "module" }
+  );
+}
+import type {
+  PreparedMetric as WorkerPreparedMetric,
+  RiskLevelResult as WorkerRiskLevelResult,
+} from "@/workers/stop-loss-worker";
+
+interface KlineData {
+  symbol: string;
+  interval: string;
+  openTime: string;
+  closeTime: string;
+  open: number;
+  high: number;
+  low: number;
+  close: number;
+  volume: number;
+  quoteVolume: number;
+  trades: number;
+  takerBuyBaseVolume: number;
+  takerBuyQuoteVolume: number;
+  exchange: string;
+  market: string;
+  timestamp: string;
+}
+
+interface Props {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  symbol: string;
+  // API调用所需参数
+  minPnl?: number;
+  maxPnl?: number;
+  minQuantity?: number;
+  maxQuantity?: number;
+  positionSide?: "LONG" | "SHORT" | "ALL";
+  startTime?: string;
+  endTime?: string;
+  // 止盈设置
+  takeProfitPercentage?: number;
+  enableTakeProfit?: boolean;
+}
+
+interface TradeDetail {
+  roundId: string;
+  symbol: string;
+  positionSide: "LONG" | "SHORT";
+  entryPrice: number;
+  exitPrice: number;
+  quantity: number;
+  finalPrice: number;
+  pnlAmount: number;
+  pnlRate: number;
+  originalPnlAmount: number;
+  wouldHitStopLoss: boolean;
+  wouldHitTakeProfit: boolean;
+  maxDrawdownRate: number;
+  maxProfitRate: number;
+  isUnfinished: boolean;
+  // 浮动盈亏（用于未平单列表，按最新一根K线close计算）
+  floatingRate?: number;
+  floatingAmount?: number;
+  openTime: string;
+  closeTime: string;
+  openTradeIds: string[];
+  closeTradeIds: string[];
+}
+
+interface StopLossAnalysis {
+  optimalStopLoss: {
+    percentage: number;
+    totalProfit: number;
+    totalProfitAmount: number; // 毛盈利总额（不含亏损）
+    totalLossAmount: number; // 毛亏损总额（绝对值）
+    winRate: number;
+    avgProfit: number;
+    avgLoss: number;
+    profitFactor: number;
+  };
+  riskLevels: Array<{
+    percentage: number;
+    totalProfit: number;
+    totalProfitAmount: number; // 毛盈利
+    totalLossAmount: number; // 毛亏损（绝对值）
+    winRate: number;
+    totalTrades: number;
+    profitTrades: number;
+    lossTrades: number;
+    breakEvenTrades: number; // 持平次数（盈亏为0）
+    avgProfit: number;
+    avgLoss: number;
+    profitFactor: number;
+    takeProfitTrades: number; // 触发止盈的交易数
+    stopLossTrades: number; // 触发止损的交易数
+    normalExitTrades: number; // 正常出场的交易数
+    profitTradeDetails: TradeDetail[];
+    lossTradeDetails: TradeDetail[];
+    breakEvenTradeDetails: TradeDetail[];
+  }>;
+}
+
+// 风险矩阵单元格（服务端返回）
+interface MatrixCell {
+  stopLossPercentage: number;
+  takeProfitPercentage: number;
+  realizedPnl: number;
+  unrealizedPnl: number;
+  totalCount: number;
+  unfinishedCount: number;
+}
+
+// 明细记录（服务端返回，用于转换为 TradeDetail 展示）
+interface RiskDetailRecord {
+  symbol: string;
+  exchange: string;
+  market: string;
+  roundId: string;
+  positionSide: "LONG" | "SHORT";
+  stopLossPercentage: number;
+  takeProfitPercentage: number;
+  entryPrice: number;
+  exitPrice: number;
+  finalPrice: number;
+  quantity: number;
+  pnlAmount: number;
+  pnlRate: number;
+  wouldHitStopLoss: boolean;
+  wouldHitTakeProfit: boolean;
+  isUnfinished: boolean;
+  maxDrawdownRate?: number;
+  maxProfitRate?: number;
+  floatingRate?: number;
+  floatingAmount?: number;
+  openTime: string;
+  closeTime: string;
+}
+
+export function RiskAnalysisDialog({
+  open,
+  onOpenChange,
+  symbol,
+  minPnl,
+  maxPnl,
+  minQuantity,
+  maxQuantity,
+  positionSide,
+  startTime,
+  endTime,
+  takeProfitPercentage = 1,
+  enableTakeProfit = false,
+}: Props) {
+  const [isFullscreen, setIsFullscreen] = useState(true);
+  const [analysis, setAnalysis] = useState<StopLossAnalysis | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [showTradeList, setShowTradeList] = useState(false);
+  const [selectedTrades, setSelectedTrades] = useState<TradeDetail[]>([]);
+  const [tradeListTitle, setTradeListTitle] = useState("");
+  const [sortKey, setSortKey] = useState<"pnl" | "original">("pnl");
+  const [sortAsc, setSortAsc] = useState<boolean>(false);
+  const [currentTakeProfitPercentage, setCurrentTakeProfitPercentage] =
+    useState(takeProfitPercentage);
+  const [currentEnableTakeProfit, setCurrentEnableTakeProfit] = useState(false);
+  // 止盈对比：固定一个止损百分比，查看不同止盈下的盈亏
+  const [tpBaseStopLoss, setTpBaseStopLoss] = useState<number>(-2.0);
+  const [tpVariants, setTpVariants] = useState<
+    Array<{
+      percentage: number; // 这里代表止盈百分比
+      totalProfit: number;
+      totalProfitAmount: number;
+      totalLossAmount: number;
+      winRate: number;
+      totalTrades: number;
+      profitTrades: number;
+      lossTrades: number;
+      breakEvenTrades: number;
+      avgProfit: number;
+      avgLoss: number;
+      profitFactor: number;
+      takeProfitTrades: number;
+      stopLossTrades: number;
+      normalExitTrades: number;
+    }>
+  >([]);
+
+  // 止盈止损矩阵
+  const [matrixLoading, setMatrixLoading] = useState<boolean>(false);
+  const [matrix, setMatrix] = useState<MatrixCell[]>([]);
+  const stopLossLevels = useMemo(
+    () =>
+      Array.from(new Set(matrix.map((m) => m.stopLossPercentage))).sort(
+        (a, b) => b - a
+      ),
+    [matrix]
+  );
+  const takeProfitLevels = useMemo(
+    () =>
+      Array.from(new Set(matrix.map((m) => m.takeProfitPercentage))).sort(
+        (a, b) => a - b
+      ),
+    [matrix]
+  );
+  const cellMap = useMemo(() => {
+    const map = new Map<string, MatrixCell>();
+    for (const m of matrix)
+      map.set(`${m.stopLossPercentage}|${m.takeProfitPercentage}`, m);
+    return map;
+  }, [matrix]);
+
+  async function fetchRiskMatrix(): Promise<void> {
+    setMatrixLoading(true);
+    try {
+      const params: Record<string, string | number | boolean> = {
+        symbol,
+        exchange: "binance",
+        market: "futures",
+      };
+      if (positionSide && positionSide !== "ALL")
+        params.positionSide = positionSide;
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+      const resp = await cryptoApi.getRiskMatrix<{ data: MatrixCell[] }>(
+        params
+      );
+      setMatrix(resp.data || []);
+    } catch (e) {
+      console.error("加载风险矩阵失败:", e);
+      setMatrix([]);
+    } finally {
+      setMatrixLoading(false);
+    }
+  }
+
+  async function openMatrixDetail(sl: number, tp: number): Promise<void> {
+    try {
+      const params: Record<string, string | number | boolean> = {
+        symbol,
+        exchange: "binance",
+        market: "futures",
+        stopLossPercentage: sl,
+        takeProfitPercentage: tp,
+        limit: 200,
+      };
+      if (positionSide && positionSide !== "ALL")
+        params.positionSide = positionSide;
+      if (startTime) params.startTime = startTime;
+      if (endTime) params.endTime = endTime;
+      const resp = await cryptoApi.listRiskDetails<{
+        data: RiskDetailRecord[];
+      }>(params);
+      const records = resp.data || [];
+      const transformed: TradeDetail[] = records.map((r) => ({
+        roundId: r.roundId,
+        symbol: r.symbol,
+        positionSide: r.positionSide,
+        entryPrice: r.entryPrice,
+        exitPrice: r.exitPrice,
+        quantity: r.quantity,
+        finalPrice: r.finalPrice,
+        pnlAmount: r.pnlAmount,
+        pnlRate: r.pnlRate,
+        originalPnlAmount: r.pnlAmount,
+        wouldHitStopLoss: r.wouldHitStopLoss,
+        wouldHitTakeProfit: r.wouldHitTakeProfit,
+        maxDrawdownRate: r.maxDrawdownRate ?? 0,
+        maxProfitRate: r.maxProfitRate ?? 0,
+        isUnfinished: r.isUnfinished,
+        floatingRate: r.floatingRate,
+        floatingAmount: r.floatingAmount,
+        openTime: r.openTime,
+        closeTime: r.closeTime,
+        openTradeIds: [],
+        closeTradeIds: [],
+      }));
+      setSelectedTrades(transformed);
+      setTradeListTitle(`止损 ${sl}% / 止盈 ${tp}% 明细`);
+      setShowTradeList(true);
+    } catch (e) {
+      console.error("加载矩阵明细失败:", e);
+      setSelectedTrades([]);
+      setTradeListTitle(`止损 ${sl}% / 止盈 ${tp}% 明细`);
+      setShowTradeList(true);
+    }
+  }
+
+  // 根据实际交易数据计算最佳止损点
+  const calculateStopLoss = async (overrides?: {
+    enableTakeProfit?: boolean;
+    takeProfitPercentage?: number;
+  }) => {
+    setLoading(true);
+    setError(null);
+
+    try {
+      // 优先尝试使用服务端 API 计算（future 项目）
+      type TakeProfitCmp = {
+        percentage: number;
+        totalProfit: number;
+        totalProfitAmount: number;
+        totalLossAmount: number;
+        winRate: number;
+        totalTrades: number;
+        profitTrades: number;
+        lossTrades: number;
+        breakEvenTrades: number;
+        avgProfit: number;
+        avgLoss: number;
+        profitFactor: number;
+        takeProfitTrades: number;
+        stopLossTrades: number;
+        normalExitTrades: number;
+      };
+      type ApiResponse = {
+        cached?: boolean;
+        analysis: StopLossAnalysis;
+        takeProfitComparison?: TakeProfitCmp[];
+        calculatedAt?: string;
+        analysisId?: string;
+      };
+      try {
+        const resp = await cryptoApi.calculateRiskAnalysis<ApiResponse>({
+          symbol,
+          exchange: "binance",
+          market: "futures",
+          minPnl,
+          maxPnl,
+          minQuantity,
+          maxQuantity,
+          positionSide: positionSide === "ALL" ? undefined : positionSide,
+          startTime,
+          endTime,
+          // 不启用止盈
+          enableTakeProfit: false,
+          baseStopLoss: tpBaseStopLoss,
+        });
+        if (resp && resp.analysis) {
+          setAnalysis(resp.analysis);
+          setTpVariants(resp.takeProfitComparison ?? []);
+          setLoading(false);
+          return; // 已使用服务端结果
+        }
+      } catch (apiErr) {
+        console.warn(
+          "Risk analysis API failed, fallback to local calculation",
+          apiErr
+        );
+        // 继续走本地计算
+      }
+
+      // 获取所有符合筛选条件的交易数据
+      const response = await cryptoApi.listRoundPnl<{
+        data: Array<{
+          roundId: string;
+          symbol: string;
+          exchange: string;
+          market: string;
+          positionSide: "LONG" | "SHORT";
+          totalQuantity: number;
+          avgEntryPrice: number;
+          avgExitPrice: number;
+          realizedPnl: number;
+          openTime: string;
+          closeTime: string;
+          openTradeIds: string[];
+          closeTradeIds: string[];
+        }>;
+        total: number;
+        totalPnl: number;
+      }>({
+        symbol,
+        exchange: "binance",
+        market: "futures",
+        minPnl,
+        maxPnl,
+        minQuantity,
+        maxQuantity,
+        positionSide: positionSide === "ALL" ? undefined : positionSide,
+        startTime,
+        endTime,
+        limit: 10000, // 获取所有数据进行分析
+        offset: 0,
+      });
+
+      const allTrades = response.data;
+
+      if (allTrades.length === 0) {
+        throw new Error("没有找到符合条件的交易数据");
+      }
+
+      // 简单缓存：为每个回合仅获取一次K线与开仓成交，后续止损等级复用，避免重复请求
+      const klineCache = new Map<string, KlineData[] | null>();
+      const openTradesCache = new Map<
+        string,
+        Array<{
+          price: number;
+          quantity: number;
+          timestamp: string;
+          tradeId: string;
+          orderId?: string;
+        }> | null
+      >();
+      // 最新价格缓存：按 symbol 缓存，设置短 TTL，避免在各分支频繁请求
+      const latestCloseCache = new Map<
+        string,
+        { price: number; cachedAt: number }
+      >();
+      const latestCloseInflight = new Map<string, Promise<number | null>>();
+      const LATEST_CLOSE_TTL_MS = 30_000; // 30s 内复用
+
+      async function getKlinesOnce(trade: {
+        roundId: string;
+        symbol: string;
+        exchange: string;
+        market: string;
+        openTime: string;
+        closeTime: string;
+      }): Promise<KlineData[]> {
+        if (klineCache.has(trade.roundId)) {
+          return klineCache.get(trade.roundId) || [];
+        }
+        try {
+          // 使用缓存服务获取K线数据
+          const data = await klineCacheService.getKlinesForRound({
+            roundId: trade.roundId,
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange || "binance",
+            market: "futures",
+            interval: "1m", // 恢复 1m 粒度确保极值与早停判定准确
+            openTime: trade.openTime,
+            closeTime: trade.closeTime,
+          });
+          klineCache.set(trade.roundId, data || null);
+          return data || [];
+        } catch {
+          klineCache.set(trade.roundId, null);
+          return [];
+        }
+      }
+
+      // 获取从开仓到“当前最新时刻”的1m K线
+      async function getKlinesToLatest(trade: {
+        roundId: string;
+        symbol: string;
+        exchange: string;
+        market: string;
+        openTime: string;
+      }): Promise<KlineData[]> {
+        const cacheKey = `${trade.roundId}#latest`;
+        if (klineCache.has(cacheKey)) {
+          return (klineCache.get(cacheKey) as KlineData[]) || [];
+        }
+        try {
+          // 离线模式：仅读取缓存中该 symbol 的可用结束时间，不做网络扩展
+          const latestEnd =
+            klineCacheService.getCachedEndTime({
+              symbol: trade.symbol,
+              exchange: (trade as any).exchange || "binance",
+              market: (trade as any).market || "futures",
+              interval: "1m",
+            }) || new Date().toISOString();
+          const data = await klineCacheService.getKlines({
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange || "binance",
+            market: (trade as any).market || "futures",
+            interval: "1m",
+            startTime: trade.openTime,
+            endTime: latestEnd,
+            order: "asc",
+          });
+          klineCache.set(cacheKey, data || null);
+          return data || [];
+        } catch {
+          klineCache.set(cacheKey, null);
+          return [];
+        }
+      }
+
+      async function getFirstTwoOpensOnce(trade: {
+        roundId: string;
+        symbol: string;
+        exchange: string;
+        market: string;
+        openTradeIds?: string[];
+      }): Promise<
+        Array<{
+          price: number;
+          quantity: number;
+          timestamp: string;
+          tradeId: string;
+          orderId?: string;
+        }>
+      > {
+        if (!trade.openTradeIds || trade.openTradeIds.length < 2) return [];
+        // 离线模式：跳过网络请求，直接返回空，计算仅依赖预加载的K线数据
+        if (klineCacheService.isOfflineMode()) return [];
+        if (openTradesCache.has(trade.roundId)) {
+          return openTradesCache.get(trade.roundId) || [];
+        }
+        try {
+          const { data } = await cryptoApi.getTradesByIds<{
+            data: Array<{
+              price: number;
+              quantity: number;
+              timestamp: string;
+              tradeId: string;
+              orderId?: string;
+            }>;
+          }>({
+            symbol: trade.symbol,
+            exchange: (trade as any).exchange,
+            market: (trade as any).market,
+            tradeIds: trade.openTradeIds.join(","),
+          });
+          const opens = (data || []).sort(
+            (a, b) =>
+              new Date(a.timestamp).getTime() - new Date(b.timestamp).getTime()
+          );
+          openTradesCache.set(trade.roundId, opens);
+          return opens;
+        } catch {
+          openTradesCache.set(trade.roundId, null);
+          return [];
+        }
+      }
+
+      // 获取平仓时间之后最新一根1m K线的收盘价（用于未平单浮动盈亏）
+      async function getLatestCloseAfter(trade: {
+        symbol: string;
+        exchange: string;
+        market: string;
+        closeTime: string;
+      }): Promise<number | null> {
+        const symbolKey = `${(trade as any).exchange || "binance"}/$${
+          trade.symbol
+        }/${(trade as any).market || "futures"}`;
+        const now = Date.now();
+        const cached = latestCloseCache.get(symbolKey);
+        if (cached && now - cached.cachedAt < LATEST_CLOSE_TTL_MS) {
+          return cached.price;
+        }
+        const inflight = latestCloseInflight.get(symbolKey);
+        if (inflight) return inflight;
+        const fetchP = (async () => {
+          try {
+            // 使用缓存服务获取最新价格
+            const price = await klineCacheService.getLatestPrice({
+              symbol: trade.symbol,
+              exchange: (trade as any).exchange || "binance",
+              market: (trade as any).market || "futures",
+              interval: "1m",
+            });
+            if (price !== null) {
+              latestCloseCache.set(symbolKey, { price, cachedAt: Date.now() });
+            }
+            return price;
+          } catch {
+            return cached ? cached.price : null; // 失败则退回上次缓存
+          } finally {
+            latestCloseInflight.delete(symbolKey);
+          }
+        })();
+        latestCloseInflight.set(symbolKey, fetchP);
+        return fetchP;
+      }
+
+      // 预热所有回合的缓存，避免在第一个止损等级时串行请求
+      async function warmCaches() {
+        // 离线模式下，假设页面已预加载 1m 数据；这里不再触发任何网络请求
+        if (!klineCacheService.isOfflineMode()) {
+          await klineCacheService.warmupCache(
+            allTrades.map((t) => ({
+              symbol: t.symbol,
+              exchange: (t as any).exchange || "binance",
+              market: "futures",
+              openTime: t.openTime,
+              closeTime: t.closeTime,
+            })),
+            ["1m"]
+          );
+        }
+
+        // 继续预热开仓成交数据
+        const concurrency = 10;
+        for (let i = 0; i < allTrades.length; i += concurrency) {
+          const batch = allTrades.slice(i, i + concurrency);
+          await Promise.all([
+            // 并发拉取每个回合的首两笔开仓成交
+            ...batch.map((t) => getFirstTwoOpensOnce(t as any)),
+          ]);
+        }
+
+        // 进一步：把每个 symbol 的 K 线扩展到“当前时刻”，避免后续频繁 extend 请求
+        const bySymbol = new Map<
+          string,
+          { symbol: string; exchange: string; market: string; minOpen: string }
+        >();
+        for (const t of allTrades) {
+          const key = `${(t as any).exchange || "binance"}:$${t.symbol}:$${
+            (t as any).market || "futures"
+          }`;
+          const existing = bySymbol.get(key);
+          const openIso = t.openTime;
+          if (!existing) {
+            bySymbol.set(key, {
+              symbol: t.symbol,
+              exchange: (t as any).exchange || "binance",
+              market: (t as any).market || "futures",
+              minOpen: openIso,
+            });
+          } else if (
+            new Date(openIso).getTime() < new Date(existing.minOpen).getTime()
+          ) {
+            existing.minOpen = openIso;
+          }
+        }
+        const groups = Array.from(bySymbol.values());
+        const baseSymbol = groups[0]?.symbol ?? allTrades[0]?.symbol;
+        const baseExchange =
+          groups[0]?.exchange ?? (allTrades[0] as any)?.exchange ?? "binance";
+        const baseMarket =
+          groups[0]?.market ?? (allTrades[0] as any)?.market ?? "futures";
+        const nowIso =
+          (baseSymbol
+            ? klineCacheService.getCachedEndTime({
+                symbol: baseSymbol,
+                exchange: baseExchange,
+                market: baseMarket,
+                interval: "1m",
+              })
+            : null) || new Date().toISOString();
+        const maxParallel = 6;
+        // 离线模式：不做 extendTimeRange；在线模式才执行扩展
+        if (!klineCacheService.isOfflineMode()) {
+          for (let i = 0; i < groups.length; i += maxParallel) {
+            const batch = groups.slice(i, i + maxParallel);
+            await Promise.all(
+              batch.map((g) =>
+                klineCacheService.extendTimeRange({
+                  symbol: g.symbol,
+                  exchange: g.exchange,
+                  market: g.market,
+                  interval: "1m",
+                  newStartTime: g.minOpen,
+                  newEndTime: nowIso,
+                })
+              )
+            );
+          }
+        }
+      }
+
+      await warmCaches();
+
+      // 定义要测试的止损水平（从0.5%到50%的全范围测试，加上真实订单对比）
+      const stopLossLevels = [
+        -999, // 真实订单（用-999表示永不触发）
+        -0.1,
+        -0.2,
+        -0.3,
+        -0.4,
+        -0.5,
+        -0.6,
+        -0.7,
+        -0.8,
+        -0.9,
+        -1.0,
+        -1.5,
+        -2.0,
+        -2.5,
+        -3.0,
+        -3.5,
+        -4.0,
+        -5.0,
+        -6.0,
+        -8.0,
+        -10.0,
+        -15.0,
+        -20.0,
+      ];
+
+      // 当未启用止盈时，优先使用多 Worker 并行计算（显著提速）
+      const enableTPForRun =
+        overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+      if (!enableTPForRun && typeof window !== "undefined") {
+        // 1) 预处理每笔交易，计算一次性的指标，供 Worker 复用
+        async function prepareMetrics(): Promise<WorkerPreparedMetric[]> {
+          const concurrency = 10;
+          const metrics: WorkerPreparedMetric[] = [];
+          for (let i = 0; i < allTrades.length; i += concurrency) {
+            const batch = allTrades.slice(i, i + concurrency);
+            const results = await Promise.all(
+              batch.map(async (t) => {
+                const isLong = t.positionSide === "LONG";
+                const klines = await getKlinesToLatest(t as any);
+                const entryPrice = t.avgEntryPrice;
+                const exitPrice = t.avgExitPrice;
+                const quantity = t.totalQuantity;
+
+                // 全周期最大回撤（负数）。若无K线，用0表示“不触发止损”。
+                let maxDrawdownRate = 0;
+                if (klines && klines.length > 0) {
+                  if (isLong) {
+                    let minLow = Infinity;
+                    for (const k of klines) minLow = Math.min(minLow, k.low);
+                    maxDrawdownRate =
+                      ((minLow - entryPrice) / entryPrice) * 100; // <= 0
+                  } else {
+                    let maxHigh = -Infinity;
+                    for (const k of klines) maxHigh = Math.max(maxHigh, k.high);
+                    maxDrawdownRate =
+                      -((maxHigh - entryPrice) / entryPrice) * 100; // <= 0
+                  }
+                }
+
+                // 两次开仓之间的早期回撤（负数），若无两次开仓或无K线则省略
+                let earlyFirstOpenPrice: number | undefined;
+                let earlyFirstOpenQty: number | undefined;
+                let earlyDrawdownRate: number | undefined;
+                if (
+                  klines &&
+                  klines.length > 0 &&
+                  t.openTradeIds &&
+                  t.openTradeIds.length >= 2
+                ) {
+                  try {
+                    const opens = await getFirstTwoOpensOnce(t as any);
+                    if (opens.length >= 2) {
+                      const first = opens[0];
+                      const second = opens[1];
+                      const start = new Date(first.timestamp).getTime();
+                      const end = new Date(second.timestamp).getTime();
+                      if (isLong) {
+                        let minLow = Infinity;
+                        for (const k of klines) {
+                          const time = new Date(k.closeTime).getTime();
+                          if (time >= start && time <= end)
+                            minLow = Math.min(minLow, k.low);
+                        }
+                        if (minLow !== Infinity)
+                          earlyDrawdownRate =
+                            ((minLow - first.price) / first.price) * 100; // <= 0
+                      } else {
+                        let maxHigh = -Infinity;
+                        for (const k of klines) {
+                          const time = new Date(k.closeTime).getTime();
+                          if (time >= start && time <= end)
+                            maxHigh = Math.max(maxHigh, k.high);
+                        }
+                        if (maxHigh !== -Infinity)
+                          earlyDrawdownRate =
+                            -((maxHigh - first.price) / first.price) * 100; // <= 0
+                      }
+                      earlyFirstOpenPrice = first.price;
+                      earlyFirstOpenQty = first.quantity as unknown as number;
+                    }
+                  } catch {}
+                }
+
+                // 构建路径型K线数组（用于 Worker 按时间顺序判断止损触发）
+                let klineHighs: Float32Array | undefined;
+                let klineLows: Float32Array | undefined;
+                let klineTimestamps: Float64Array | undefined;
+                if (klines && klines.length > 0) {
+                  const len = klines.length;
+                  klineHighs = new Float32Array(len);
+                  klineLows = new Float32Array(len);
+                  klineTimestamps = new Float64Array(len);
+                  for (let i = 0; i < len; i++) {
+                    const k = klines[i];
+                    klineHighs[i] = k.high;
+                    klineLows[i] = k.low;
+                    klineTimestamps[i] = new Date(k.closeTime).getTime();
+                  }
+                }
+
+                const metric: WorkerPreparedMetric = {
+                  roundId: t.roundId,
+                  symbol: t.symbol,
+                  positionSide: t.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  realizedPnl: t.realizedPnl,
+                  openTime: t.openTime,
+                  closeTime: t.closeTime,
+                  maxDrawdownRate,
+                  earlyFirstOpenPrice,
+                  earlyFirstOpenQty,
+                  earlyDrawdownRate,
+                  klineHighs,
+                  klineLows,
+                  klineTimestamps,
+                } as WorkerPreparedMetric;
+                return metric;
+              })
+            );
+            for (const r of results) if (r) metrics.push(r);
+          }
+          return metrics;
+        }
+
+        function runWithWorker(
+          worker: Worker,
+          msg: { percentage: number; trades: WorkerPreparedMetric[] }
+        ): Promise<WorkerRiskLevelResult> {
+          return new Promise((resolve) => {
+            const onMessage = (e: MessageEvent<WorkerRiskLevelResult>) => {
+              worker.removeEventListener("message", onMessage as any);
+              resolve(e.data);
+            };
+            worker.addEventListener("message", onMessage as any);
+            worker.postMessage(msg);
+          });
+        }
+
+        async function computeInPool(
+          metrics: WorkerPreparedMetric[]
+        ): Promise<WorkerRiskLevelResult[]> {
+          const levels = stopLossLevels.map((p) => (p === -999 ? 0 : p));
+          const results: WorkerRiskLevelResult[] = new Array(levels.length);
+          const poolSize = Math.max(
+            1,
+            Math.min(
+              levels.length,
+              (navigator as any)?.hardwareConcurrency || 4
+            )
+          );
+          let cursor = 0;
+          await Promise.all(
+            new Array(poolSize).fill(0).map(async () => {
+              const w = createStopLossWorker();
+              try {
+                while (cursor < levels.length) {
+                  const my = cursor++;
+                  const res = await runWithWorker(w, {
+                    percentage: levels[my],
+                    trades: metrics,
+                  });
+                  results[my] = res;
+                }
+              } finally {
+                w.terminate();
+              }
+            })
+          );
+          return results;
+        }
+
+        const metrics = await prepareMetrics();
+        const workerResults = await computeInPool(metrics);
+        const normalizeDetail = (d: any) => ({
+          ...d,
+          originalPnlAmount: d.originalPnlAmount ?? d.pnlAmount ?? 0,
+          wouldHitTakeProfit: d.wouldHitTakeProfit ?? false,
+          maxProfitRate: d.maxProfitRate ?? 0,
+          isUnfinished: d.isUnfinished ?? false,
+          floatingRate: d.floatingRate,
+          floatingAmount: d.floatingAmount,
+          openTradeIds: d.openTradeIds ?? [],
+          closeTradeIds: d.closeTradeIds ?? [],
+        });
+
+        const riskLevels = workerResults.map((r, idx) => {
+          const stopTrades =
+            [...r.profitTradeDetails, ...r.lossTradeDetails].filter(
+              (d) => d.wouldHitStopLoss
+            ).length || 0;
+          const totalTrades = r.totalTrades;
+          const normalExit = Math.max(totalTrades - stopTrades, 0);
+          return {
+            percentage: stopLossLevels[idx] === -999 ? 0 : stopLossLevels[idx],
+            totalProfit: r.totalProfit,
+            totalProfitAmount: r.totalProfitAmount,
+            totalLossAmount: r.totalLossAmount,
+            winRate: r.winRate,
+            totalTrades: r.totalTrades,
+            profitTrades: r.profitTrades,
+            lossTrades: r.lossTrades,
+            breakEvenTrades: 0,
+            avgProfit: r.avgProfit,
+            avgLoss: r.avgLoss,
+            profitFactor: r.profitFactor,
+            takeProfitTrades: 0,
+            stopLossTrades: stopTrades,
+            normalExitTrades: normalExit,
+            profitTradeDetails: r.profitTradeDetails.map(
+              normalizeDetail
+            ) as any,
+            lossTradeDetails: r.lossTradeDetails.map(normalizeDetail) as any,
+            breakEvenTradeDetails: [],
+          };
+        });
+
+        const bestLevel = riskLevels.reduce((a, b) =>
+          b.totalProfit > a.totalProfit ? b : a
+        );
+
+        setAnalysis({
+          optimalStopLoss: {
+            percentage: bestLevel.percentage,
+            totalProfit: bestLevel.totalProfit,
+            totalProfitAmount: bestLevel.totalProfitAmount,
+            totalLossAmount: bestLevel.totalLossAmount,
+            winRate: bestLevel.winRate,
+            avgProfit: bestLevel.avgProfit,
+            avgLoss: bestLevel.avgLoss,
+            profitFactor: bestLevel.profitFactor,
+          },
+          riskLevels,
+        });
+
+        // 额外计算：在固定止损下，不同止盈的盈亏对比
+        const takeProfitLevels = [1, 2, 3, 5, 7.5, 10, 12, 15, 20];
+        const baseSL = tpBaseStopLoss; // 例如 -2 表示 -2%
+        const tpResults = await Promise.all(
+          takeProfitLevels.map(async (tpPct) => {
+            const stopLossPercentage = baseSL; // 复用主循环逻辑，但固定一个止损
+            let totalTrades = 0;
+            let profitTrades = 0;
+            let lossTrades = 0;
+            let breakEvenTrades = 0;
+            let totalProfitAmount = 0;
+            let totalLossAmount = 0;
+            let totalNetProfit = 0;
+            let takeProfitTrades = 0;
+            let stopLossTrades = 0;
+            let normalExitTrades = 0;
+
+            const tradesToProcess = allTrades;
+            for (const trade of tradesToProcess) {
+              const entryPrice = trade.avgEntryPrice;
+              const exitPrice = trade.avgExitPrice;
+              const quantity = trade.totalQuantity;
+              const isLong = trade.positionSide === "LONG";
+              if (!entryPrice || !exitPrice || !quantity) continue;
+              try {
+                // 直接使用缓存服务获取K线数据，因为已经预热过了
+                const klines = await getKlinesToLatest({
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  exchange: (trade as any).exchange || "binance",
+                  market: (trade as any).market || "futures",
+                  openTime: trade.openTime,
+                });
+                if (!klines || klines.length === 0) {
+                  // 无K线：按原始结果，但在启用止盈时将其视为未平单（不计入），与主逻辑一致
+                  // 这里我们只做统计，用于TP对比；保持与主逻辑一致：启用止盈忽略真实平单
+                  normalExitTrades++;
+                  continue;
+                }
+
+                // 计算最大浮亏/浮盈（用于后续展示或判断）
+                let maxDrawdownRate = 0;
+                let maxProfitRate = 0;
+                for (const kline of klines) {
+                  const drawdown = isLong
+                    ? ((kline.low - entryPrice) / entryPrice) * 100
+                    : ((entryPrice - kline.high) / entryPrice) * 100;
+                  const profitRate = isLong
+                    ? ((kline.high - entryPrice) / entryPrice) * 100
+                    : ((entryPrice - kline.low) / entryPrice) * 100;
+                  if (drawdown < maxDrawdownRate) maxDrawdownRate = drawdown;
+                  if (profitRate > maxProfitRate) maxProfitRate = profitRate;
+                }
+
+                // 先考虑两次开仓之间的早停（若存在两次开仓）
+                let wouldHitStopLoss = false;
+                let wouldHitTakeProfit = false;
+                let finalPrice = exitPrice;
+                if (trade.openTradeIds && trade.openTradeIds.length >= 2) {
+                  try {
+                    const opens = await getFirstTwoOpensOnce(trade as any);
+                    if (opens.length >= 2) {
+                      const first = opens[0];
+                      const second = opens[1];
+                      const firstOpenTime = new Date(
+                        first.timestamp
+                      ).toISOString();
+                      const secondOpenTime = new Date(
+                        second.timestamp
+                      ).toISOString();
+                      const firstStopPrice = isLong
+                        ? first.price * (1 + stopLossPercentage / 100)
+                        : first.price * (1 - stopLossPercentage / 100);
+                      const firstTakeProfitPrice = isLong
+                        ? first.price * (1 + tpPct / 100)
+                        : first.price * (1 - tpPct / 100);
+                      const betweenK = klines.filter(
+                        (k) =>
+                          k.openTime >= firstOpenTime &&
+                          k.closeTime <= secondOpenTime
+                      );
+                      for (const k of betweenK) {
+                        if (k.closeTime === secondOpenTime) break;
+                        if (isLong) {
+                          if (k.high >= firstTakeProfitPrice) {
+                            wouldHitTakeProfit = true;
+                            finalPrice = firstTakeProfitPrice;
+                            break;
+                          }
+                          if (k.low <= firstStopPrice) {
+                            wouldHitStopLoss = true;
+                            finalPrice = firstStopPrice;
+                            break;
+                          }
+                        } else {
+                          if (k.low <= firstTakeProfitPrice) {
+                            wouldHitTakeProfit = true;
+                            finalPrice = firstTakeProfitPrice;
+                            break;
+                          }
+                          if (k.high >= firstStopPrice) {
+                            wouldHitStopLoss = true;
+                            finalPrice = firstStopPrice;
+                            break;
+                          }
+                        }
+                      }
+                      if (wouldHitTakeProfit || wouldHitStopLoss) {
+                        const pnlRateEarly = isLong
+                          ? ((finalPrice - first.price) / first.price) * 100
+                          : ((first.price - finalPrice) / first.price) * 100;
+                        const pnlAmountEarly =
+                          (pnlRateEarly / 100) * (first.price * first.quantity);
+                        totalTrades++;
+                        totalNetProfit += pnlAmountEarly;
+                        if (wouldHitTakeProfit) takeProfitTrades++;
+                        else stopLossTrades++;
+                        if (pnlAmountEarly > 0) {
+                          profitTrades++;
+                          totalProfitAmount += pnlAmountEarly;
+                        } else if (pnlAmountEarly < 0) {
+                          lossTrades++;
+                          totalLossAmount += Math.abs(pnlAmountEarly);
+                        }
+                        continue;
+                      }
+                    }
+                  } catch {}
+                }
+
+                // 正常期间：检查止盈/止损
+                const stopLossPrice = isLong
+                  ? entryPrice * (1 + stopLossPercentage / 100)
+                  : entryPrice * (1 - stopLossPercentage / 100);
+                const takeProfitPrice = isLong
+                  ? entryPrice * (1 + tpPct / 100)
+                  : entryPrice * (1 - tpPct / 100);
+                for (const kline of klines) {
+                  if (isLong) {
+                    if (kline.high >= takeProfitPrice) {
+                      wouldHitTakeProfit = true;
+                      finalPrice = takeProfitPrice;
+                      break;
+                    }
+                    if (kline.low <= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      break;
+                    }
+                  } else {
+                    if (kline.low <= takeProfitPrice) {
+                      wouldHitTakeProfit = true;
+                      finalPrice = takeProfitPrice;
+                      break;
+                    }
+                    if (kline.high >= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      break;
+                    }
+                  }
+                }
+
+                // 计算Pnl
+                const pnlRate = isLong
+                  ? ((finalPrice - entryPrice) / entryPrice) * 100
+                  : ((entryPrice - finalPrice) / entryPrice) * 100;
+                const pnlAmount = (pnlRate / 100) * (entryPrice * quantity);
+                totalTrades++;
+                totalNetProfit += pnlAmount;
+                if (wouldHitTakeProfit) takeProfitTrades++;
+                else if (wouldHitStopLoss) stopLossTrades++;
+                else normalExitTrades++;
+                if (pnlAmount > 0) {
+                  profitTrades++;
+                  totalProfitAmount += pnlAmount;
+                } else if (pnlAmount < 0) {
+                  lossTrades++;
+                  totalLossAmount += Math.abs(pnlAmount);
+                }
+              } catch {}
+            }
+
+            const winRate =
+              totalTrades > 0 ? (profitTrades / totalTrades) * 100 : 0;
+            const avgProfit =
+              profitTrades > 0 ? totalProfitAmount / profitTrades : 0;
+            const avgLoss = lossTrades > 0 ? totalLossAmount / lossTrades : 0;
+            const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
+            return {
+              percentage: tpPct,
+              totalProfit: Number(totalNetProfit.toFixed(2)),
+              totalProfitAmount: Number(totalProfitAmount.toFixed(2)),
+              totalLossAmount: Number(totalLossAmount.toFixed(2)),
+              winRate: Number(winRate.toFixed(1)),
+              totalTrades,
+              profitTrades,
+              lossTrades,
+              breakEvenTrades,
+              avgProfit: Number(avgProfit.toFixed(2)),
+              avgLoss: Number(avgLoss.toFixed(2)),
+              profitFactor: Number(profitFactor.toFixed(2)),
+              takeProfitTrades,
+              stopLossTrades,
+              normalExitTrades,
+            };
+          })
+        );
+        setTpVariants(tpResults);
+        setLoading(false);
+        return; // 已完成：多 Worker 分支
+      }
+
+      // 为了提高性能，我们将并发处理止损计算（并使用缓存避免重复请求）
+      const riskLevels = await Promise.all(
+        stopLossLevels.map(async (stopLossPercentage) => {
+          const isRealOrderRow = stopLossPercentage === -999;
+          let totalTrades = 0;
+          let profitTrades = 0;
+          let lossTrades = 0;
+          let breakEvenTrades = 0;
+          let totalProfitAmount = 0;
+          let totalLossAmount = 0;
+          let totalNetProfit = 0;
+          let takeProfitTrades = 0;
+          let stopLossTrades = 0;
+          let normalExitTrades = 0;
+          const profitTradeDetails: TradeDetail[] = [];
+          const lossTradeDetails: TradeDetail[] = [];
+          const breakEvenTradeDetails: TradeDetail[] = [];
+
+          // 处理全部筛选到的交易；如需提速可按需限制数量
+          const tradesToProcess = allTrades;
+
+          for (const trade of tradesToProcess) {
+            const entryPrice = trade.avgEntryPrice;
+            const exitPrice = trade.avgExitPrice;
+            const quantity = trade.totalQuantity;
+            const isLong = trade.positionSide === "LONG";
+
+            // 跳过无效数据
+            if (!entryPrice || !exitPrice || !quantity) {
+              continue;
+            }
+
+            try {
+              // 获取交易期间的K线数据（使用缓存 + 5m 粒度）
+              const klines = await getKlinesToLatest(trade as any);
+
+              if (!klines || klines.length === 0) {
+                // 如果没有K线数据，使用原始交易结果作为回退，并同时补充详情
+                const entryPrice = trade.avgEntryPrice;
+                const exitPrice = trade.avgExitPrice;
+                const quantity = trade.totalQuantity;
+                const pnlAmount = trade.realizedPnl;
+                // 若启用止盈：忽略真实平单，不计入盈利/亏损/总交易
+                const enableTPHere =
+                  overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                if (!isRealOrderRow && enableTPHere) {
+                  normalExitTrades++;
+                  // 计算基于“最新一根K线”的浮动盈亏
+                  let floatingRate: number | undefined;
+                  let floatingAmount: number | undefined;
+                  const latest = await getLatestCloseAfter(trade as any);
+                  if (latest !== null) {
+                    const posValue = entryPrice * quantity;
+                    floatingRate = isLong
+                      ? ((latest - entryPrice) / entryPrice) * 100
+                      : ((entryPrice - latest) / entryPrice) * 100;
+                    floatingAmount = (floatingRate / 100) * posValue;
+                  }
+                  const ignoredDetail: TradeDetail = {
+                    roundId: trade.roundId,
+                    symbol: trade.symbol,
+                    positionSide: trade.positionSide,
+                    entryPrice,
+                    exitPrice,
+                    quantity,
+                    finalPrice: exitPrice,
+                    pnlAmount,
+                    pnlRate:
+                      ((isLong
+                        ? exitPrice - entryPrice
+                        : entryPrice - exitPrice) /
+                        entryPrice) *
+                      100,
+                    originalPnlAmount: trade.realizedPnl,
+                    wouldHitStopLoss: false,
+                    wouldHitTakeProfit: false,
+                    maxDrawdownRate: 0,
+                    maxProfitRate: 0,
+                    isUnfinished: true,
+                    floatingRate,
+                    floatingAmount,
+                    openTime: trade.openTime,
+                    closeTime: trade.closeTime,
+                    openTradeIds: trade.openTradeIds || [],
+                    closeTradeIds: trade.closeTradeIds || [],
+                  };
+                  breakEvenTrades++;
+                  breakEvenTradeDetails.push(ignoredDetail);
+                  continue;
+                }
+
+                totalTrades++;
+                totalNetProfit += pnlAmount;
+                if (!isRealOrderRow) {
+                  normalExitTrades++; // 仅策略行计入正常出场
+                }
+                // 计算基于“最新一根K线”的浮动盈亏（即使无K线也尝试用最新价估算）
+                let floatingRate2: number | undefined;
+                let floatingAmount2: number | undefined;
+                try {
+                  const latest2 = await getLatestCloseAfter(trade as any);
+                  if (latest2 !== null) {
+                    const posValue2 = entryPrice * quantity;
+                    floatingRate2 = isLong
+                      ? ((latest2 - entryPrice) / entryPrice) * 100
+                      : ((entryPrice - latest2) / entryPrice) * 100;
+                    floatingAmount2 = (floatingRate2 / 100) * posValue2;
+                  }
+                } catch {}
+                const detail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice: exitPrice,
+                  pnlAmount,
+                  pnlRate:
+                    ((isLong
+                      ? exitPrice - entryPrice
+                      : entryPrice - exitPrice) /
+                      entryPrice) *
+                    100,
+                  originalPnlAmount: trade.realizedPnl,
+                  wouldHitStopLoss: false,
+                  wouldHitTakeProfit: false,
+                  maxDrawdownRate: 0,
+                  maxProfitRate: 0,
+                  // 新定义：
+                  // 未启用止盈：未真实平单且未止损（此分支无K线，无法判断止损，仅按是否有真实平单近似）
+                  // 启用止盈的情形已在上方被忽略并计入未平单
+                  isUnfinished: (() => {
+                    const hasRealExitLocal = !!exitPrice && !!trade.closeTime;
+                    return (
+                      !isRealOrderRow && !enableTPHere && !hasRealExitLocal
+                    );
+                  })(),
+                  floatingRate: floatingRate2,
+                  floatingAmount: floatingAmount2,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
+                };
+                // 按新定义累计未平单
+                const hasRealExit = !!exitPrice && !!trade.closeTime;
+                if (!isRealOrderRow && !enableTPHere && !hasRealExit) {
+                  breakEvenTrades++;
+                  breakEvenTradeDetails.push(detail);
+                }
+                // 分类：盈利/亏损（持平不再重复计入未平单数）
+                if (pnlAmount > 0) {
+                  profitTrades++;
+                  totalProfitAmount += pnlAmount;
+                  profitTradeDetails.push(detail);
+                } else if (pnlAmount < 0) {
+                  lossTrades++;
+                  totalLossAmount += Math.abs(pnlAmount);
+                  lossTradeDetails.push(detail);
+                }
+                continue;
+              }
+
+              // 若有多次开仓：如果第一笔开仓在第二笔开仓前已触发止损，则直接止损退出
+              if (
+                !isRealOrderRow &&
+                trade.openTradeIds &&
+                trade.openTradeIds.length >= 2
+              ) {
+                try {
+                  const openTrades = await getFirstTwoOpensOnce(trade as any);
+
+                  if (openTrades.length >= 2) {
+                    const first = openTrades[0];
+                    const second = openTrades[1];
+                    const firstOpenTime = new Date(
+                      first.timestamp
+                    ).toISOString();
+                    const secondOpenTime = new Date(
+                      second.timestamp
+                    ).toISOString();
+
+                    // 在第一笔到第二笔之间按时间顺序检查是否先达到止盈或止损
+                    const firstStopPrice = isLong
+                      ? first.price * (1 + stopLossPercentage / 100)
+                      : first.price * (1 - stopLossPercentage / 100);
+                    const firstTakeProfitPrice =
+                      overrides?.enableTakeProfit ?? currentEnableTakeProfit
+                        ? isLong
+                          ? first.price *
+                            ((overrides?.takeProfitPercentage ??
+                              currentTakeProfitPercentage) /
+                              100 +
+                              1)
+                          : first.price *
+                            (1 -
+                              (overrides?.takeProfitPercentage ??
+                                currentTakeProfitPercentage) /
+                                100)
+                        : null;
+
+                    const betweenK = klines.filter(
+                      (k) =>
+                        k.openTime >= firstOpenTime &&
+                        k.closeTime <= secondOpenTime
+                    );
+
+                    let earlyStopLoss = false;
+                    let earlyTakeProfit = false;
+                    if (betweenK.length > 0) {
+                      for (const k of betweenK) {
+                        // 避免在包含第二次开仓时刻的最后一根K线上误判（该K线内可能先发生第二次开仓）
+                        if (k.closeTime === secondOpenTime) {
+                          break;
+                        }
+                        // 先检查止盈
+                        if (firstTakeProfitPrice !== null) {
+                          if (isLong) {
+                            if (k.high >= firstTakeProfitPrice) {
+                              earlyTakeProfit = true;
+                              break;
+                            }
+                          } else {
+                            if (k.low <= firstTakeProfitPrice) {
+                              earlyTakeProfit = true;
+                              break;
+                            }
+                          }
+                        }
+                        // 再检查止损
+                        if (isLong) {
+                          if (k.low <= firstStopPrice) {
+                            earlyStopLoss = true;
+                            break;
+                          }
+                        } else {
+                          if (k.high >= firstStopPrice) {
+                            earlyStopLoss = true;
+                            break;
+                          }
+                        }
+                      }
+                    }
+
+                    if (earlyTakeProfit || earlyStopLoss) {
+                      const posValue = first.price * first.quantity;
+                      const exitAt = earlyTakeProfit
+                        ? (firstTakeProfitPrice as number)
+                        : firstStopPrice;
+                      const pnlRateEarly = isLong
+                        ? ((exitAt - first.price) / first.price) * 100
+                        : ((first.price - exitAt) / first.price) * 100;
+                      const pnlAmountEarly = (pnlRateEarly / 100) * posValue;
+
+                      totalTrades++;
+                      totalNetProfit += pnlAmountEarly;
+                      if (earlyTakeProfit) {
+                        takeProfitTrades++;
+                      } else {
+                        stopLossTrades++;
+                      }
+
+                      // 估算最大浮盈/浮亏用于展示
+                      let maxDd = 0;
+                      let maxPr = 0;
+                      if (betweenK.length > 0) {
+                        if (isLong) {
+                          const minLow = Math.min(
+                            ...betweenK.map((k) => k.low)
+                          );
+                          const maxHigh = Math.max(
+                            ...betweenK.map((k) => k.high)
+                          );
+                          maxDd = ((minLow - first.price) / first.price) * 100;
+                          maxPr = ((maxHigh - first.price) / first.price) * 100;
+                        } else {
+                          const maxHigh = Math.max(
+                            ...betweenK.map((k) => k.high)
+                          );
+                          const minLow = Math.min(
+                            ...betweenK.map((k) => k.low)
+                          );
+                          maxDd = ((first.price - maxHigh) / first.price) * 100;
+                          maxPr = ((first.price - minLow) / first.price) * 100;
+                        }
+                      }
+
+                      const detail: TradeDetail = {
+                        roundId: trade.roundId,
+                        symbol: trade.symbol,
+                        positionSide: trade.positionSide,
+                        entryPrice: first.price,
+                        exitPrice: trade.avgExitPrice,
+                        quantity: first.quantity,
+                        finalPrice: exitAt,
+                        pnlAmount: pnlAmountEarly,
+                        pnlRate: pnlRateEarly,
+                        originalPnlAmount: trade.realizedPnl,
+                        wouldHitStopLoss: earlyStopLoss,
+                        wouldHitTakeProfit: earlyTakeProfit,
+                        maxDrawdownRate: maxDd,
+                        maxProfitRate: maxPr,
+                        isUnfinished: false,
+                        openTime: first.timestamp,
+                        closeTime: trade.closeTime,
+                        openTradeIds: trade.openTradeIds || [],
+                        closeTradeIds: trade.closeTradeIds || [],
+                      };
+
+                      if (pnlAmountEarly > 0) {
+                        profitTrades++;
+                        totalProfitAmount += pnlAmountEarly;
+                        profitTradeDetails.push(detail);
+                      } else if (pnlAmountEarly < 0) {
+                        lossTrades++;
+                        totalLossAmount += Math.abs(pnlAmountEarly);
+                        lossTradeDetails.push(detail);
+                      }
+
+                      // 跳过后续逻辑，处理下一笔回合
+                      continue;
+                    }
+                  }
+                } catch (e) {
+                  // 获取原始开仓交易失败则忽略早停检查，继续正常流程
+                  console.warn("获取开仓交易失败，跳过早停检查", e);
+                }
+              }
+
+              // 计算最大浮亏率和最大浮盈率
+              let maxDrawdownRate = 0;
+              let maxProfitRate = 0;
+              if (isLong) {
+                // 多头：找交易期间的最低价和最高价
+                const lowestPrice = Math.min(...klines.map((k) => k.low));
+                const highestPrice = Math.max(...klines.map((k) => k.high));
+                maxDrawdownRate =
+                  ((lowestPrice - entryPrice) / entryPrice) * 100;
+                maxProfitRate =
+                  ((highestPrice - entryPrice) / entryPrice) * 100;
+              } else {
+                // 空头：找交易期间的最高价和最低价
+                const highestPrice = Math.max(...klines.map((k) => k.high));
+                const lowestPrice = Math.min(...klines.map((k) => k.low));
+                maxDrawdownRate =
+                  ((entryPrice - highestPrice) / entryPrice) * 100;
+                maxProfitRate = ((entryPrice - lowestPrice) / entryPrice) * 100;
+              }
+
+              // 判断是否会触发止损或止盈（按时间顺序检查）
+              let finalPrice = exitPrice;
+              let wouldHitStopLoss = false;
+              let wouldHitTakeProfit = false;
+
+              if (!isRealOrderRow) {
+                // 计算止盈价和止损价（支持 overrides）
+                const enableTP =
+                  overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                const tpPct =
+                  overrides?.takeProfitPercentage ??
+                  currentTakeProfitPercentage;
+                const takeProfitPrice = enableTP
+                  ? isLong
+                    ? entryPrice * (1 + tpPct / 100)
+                    : entryPrice * (1 - tpPct / 100)
+                  : null;
+
+                const stopLossPrice = isLong
+                  ? entryPrice * (1 + stopLossPercentage / 100)
+                  : entryPrice * (1 - stopLossPercentage / 100);
+
+                // 按时间顺序检查每个K线，看哪个条件先触发
+                let hitCondition = false;
+                for (const kline of klines) {
+                  // 避免在包含原计划平仓时刻的最后一根K线上误判（最后一根K线可能在真实平仓后仍有波动）
+                  if (kline.closeTime === trade.closeTime) {
+                    break;
+                  }
+                  if (hitCondition) break;
+
+                  // 检查止盈触发（优先级更高）
+                  if (takeProfitPrice !== null) {
+                    if (isLong) {
+                      if (kline.high >= takeProfitPrice) {
+                        wouldHitTakeProfit = true;
+                        finalPrice = takeProfitPrice;
+                        hitCondition = true;
+                        break;
+                      }
+                    } else {
+                      if (kline.low <= takeProfitPrice) {
+                        wouldHitTakeProfit = true;
+                        finalPrice = takeProfitPrice;
+                        hitCondition = true;
+                        break;
+                      }
+                    }
+                  }
+
+                  // 检查止损触发
+                  if (isLong) {
+                    if (kline.low <= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      hitCondition = true;
+                      break;
+                    }
+                  } else {
+                    if (kline.high >= stopLossPrice) {
+                      wouldHitStopLoss = true;
+                      finalPrice = stopLossPrice;
+                      hitCondition = true;
+                      break;
+                    }
+                  }
+                }
+              }
+
+              // 计算在该止损条件下的盈亏率
+              const pnlRate = isLong
+                ? ((finalPrice - entryPrice) / entryPrice) * 100
+                : ((entryPrice - finalPrice) / entryPrice) * 100;
+
+              // 计算实际盈亏金额
+              const positionValue = entryPrice * quantity;
+              const pnlAmount = (pnlRate / 100) * positionValue;
+
+              // 计算“现实世界最新一根1m K线”的浮动盈亏（用于未平单列表，始终使用最新价）
+              let latestFloatingRate: number | undefined;
+              let latestFloatingAmount: number | undefined;
+              if (klines && klines.length > 0) {
+                let lastClose = klines[klines.length - 1].close;
+                const newest = await getLatestCloseAfter(trade as any);
+                if (newest !== null) lastClose = newest;
+                latestFloatingRate = isLong
+                  ? ((lastClose - entryPrice) / entryPrice) * 100
+                  : ((entryPrice - lastClose) / entryPrice) * 100;
+                latestFloatingAmount =
+                  (latestFloatingRate / 100) * positionValue;
+              }
+
+              // 若启用止盈且未触发止盈/止损：忽略真实平单，不计入盈利/亏损/总交易
+              const enableTPNow =
+                overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+              if (
+                !isRealOrderRow &&
+                enableTPNow &&
+                !wouldHitTakeProfit &&
+                !wouldHitStopLoss
+              ) {
+                normalExitTrades++;
+                const ignoredDetail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice,
+                  pnlAmount,
+                  pnlRate,
+                  originalPnlAmount: trade.realizedPnl,
+                  wouldHitStopLoss,
+                  wouldHitTakeProfit,
+                  maxDrawdownRate,
+                  maxProfitRate,
+                  isUnfinished: true,
+                  floatingRate: latestFloatingRate,
+                  floatingAmount: latestFloatingAmount,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
+                };
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(ignoredDetail);
+                continue;
+              }
+
+              totalTrades++;
+              totalNetProfit += pnlAmount;
+
+              // 统计不同出场方式
+              if (wouldHitTakeProfit) {
+                takeProfitTrades++;
+              } else if (wouldHitStopLoss) {
+                stopLossTrades++;
+              } else {
+                if (!isRealOrderRow) normalExitTrades++;
+              }
+
+              const tradeDetail: TradeDetail = {
+                roundId: trade.roundId,
+                symbol: trade.symbol,
+                positionSide: trade.positionSide,
+                entryPrice,
+                exitPrice,
+                quantity,
+                finalPrice,
+                pnlAmount,
+                pnlRate,
+                originalPnlAmount: trade.realizedPnl,
+                wouldHitStopLoss,
+                wouldHitTakeProfit,
+                maxDrawdownRate,
+                maxProfitRate,
+                // 新定义：
+                // - 未启用止盈：未真实平单且未止损
+                // - 启用止盈：未止盈且未止损
+                isUnfinished: (() => {
+                  const enableTPNowLocal =
+                    overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+                  if (enableTPNowLocal)
+                    return !wouldHitTakeProfit && !wouldHitStopLoss;
+                  const hasRealExitLocal = !!exitPrice && !!trade.closeTime;
+                  return !hasRealExitLocal && !wouldHitStopLoss;
+                })(),
+                floatingRate: latestFloatingRate,
+                floatingAmount: latestFloatingAmount,
+                openTime: trade.openTime,
+                closeTime: trade.closeTime,
+                openTradeIds: trade.openTradeIds || [],
+                closeTradeIds: trade.closeTradeIds || [],
+              };
+              // 按新定义累计未平单（仅策略行）
+              if (!isRealOrderRow && tradeDetail.isUnfinished) {
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(tradeDetail);
+              }
+              if (pnlAmount > 0) {
+                profitTrades++;
+                totalProfitAmount += pnlAmount;
+                profitTradeDetails.push(tradeDetail);
+              } else if (pnlAmount < 0) {
+                lossTrades++;
+                totalLossAmount += Math.abs(pnlAmount);
+                lossTradeDetails.push(tradeDetail);
+              }
+
+              // 调试信息（前3笔交易）
+              if (stopLossPercentage === -2.0 && totalTrades <= 3) {
+                console.log(
+                  `${stopLossPercentage}% 止损 - Trade ${totalTrades}:`,
+                  {
+                    roundId: trade.roundId,
+                    positionSide: isLong ? "LONG" : "SHORT",
+                    entryPrice: Number(entryPrice.toFixed(4)),
+                    exitPrice: Number(exitPrice.toFixed(4)),
+                    maxDrawdownRate: Number(maxDrawdownRate.toFixed(2)),
+                    stopLossThreshold: stopLossPercentage,
+                    wouldHitStopLoss,
+                    finalPrice: Number(finalPrice.toFixed(4)),
+                    pnlRate: Number(pnlRate.toFixed(2)),
+                    pnlAmount: Number(pnlAmount.toFixed(2)),
+                    actualPnl: Number(trade.realizedPnl.toFixed(2)),
+                  }
+                );
+              }
+            } catch (error) {
+              console.error(`获取交易 ${trade.roundId} 的K线数据失败:`, error);
+              // 如果K线数据获取失败，使用原始交易结果，并补充详情
+              const entryPrice = trade.avgEntryPrice;
+              const exitPrice = trade.avgExitPrice;
+              const quantity = trade.totalQuantity;
+              const pnlAmount = trade.realizedPnl;
+              // 若启用止盈：忽略真实平单，不计入盈利/亏损/总交易
+              const enableTPHere2 =
+                overrides?.enableTakeProfit ?? currentEnableTakeProfit;
+              if (!isRealOrderRow && enableTPHere2) {
+                normalExitTrades++;
+                const ignoredDetail: TradeDetail = {
+                  roundId: trade.roundId,
+                  symbol: trade.symbol,
+                  positionSide: trade.positionSide,
+                  entryPrice,
+                  exitPrice,
+                  quantity,
+                  finalPrice: exitPrice,
+                  pnlAmount,
+                  pnlRate:
+                    ((isLong
+                      ? exitPrice - entryPrice
+                      : entryPrice - exitPrice) /
+                      entryPrice) *
+                    100,
+                  originalPnlAmount: trade.realizedPnl,
+                  wouldHitStopLoss: false,
+                  wouldHitTakeProfit: false,
+                  maxDrawdownRate: 0,
+                  maxProfitRate: 0,
+                  isUnfinished: true,
+                  openTime: trade.openTime,
+                  closeTime: trade.closeTime,
+                  openTradeIds: trade.openTradeIds || [],
+                  closeTradeIds: trade.closeTradeIds || [],
+                };
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(ignoredDetail);
+                continue;
+              }
+
+              totalTrades++;
+              totalNetProfit += pnlAmount;
+              if (!isRealOrderRow) normalExitTrades++; // K线获取失败时按正常出场处理
+
+              const detail: TradeDetail = {
+                roundId: trade.roundId,
+                symbol: trade.symbol,
+                positionSide: trade.positionSide,
+                entryPrice,
+                exitPrice,
+                quantity,
+                finalPrice: exitPrice,
+                pnlAmount,
+                pnlRate:
+                  ((isLong ? exitPrice - entryPrice : entryPrice - exitPrice) /
+                    entryPrice) *
+                  100,
+                originalPnlAmount: trade.realizedPnl,
+                wouldHitStopLoss: false,
+                wouldHitTakeProfit: false,
+                maxDrawdownRate: 0,
+                maxProfitRate: 0,
+                // 新定义：未启用止盈：未真实平单且未止损（异常回退无法判断止损，按是否有真实平单近似）
+                // 启用止盈的情形已在上方被忽略并计入未平单
+                isUnfinished: (() => {
+                  const hasRealExitLocal2 = !!exitPrice && !!trade.closeTime;
+                  return (
+                    !isRealOrderRow && !enableTPHere2 && !hasRealExitLocal2
+                  );
+                })(),
+                openTime: trade.openTime,
+                closeTime: trade.closeTime,
+                openTradeIds: trade.openTradeIds || [],
+                closeTradeIds: trade.closeTradeIds || [],
+              };
+              // 按新定义累计未平单
+              const hasRealExit3 = !!exitPrice && !!trade.closeTime;
+              if (!isRealOrderRow && !enableTPHere2 && !hasRealExit3) {
+                breakEvenTrades++;
+                breakEvenTradeDetails.push(detail);
+              }
+              // 分类：盈利/亏损（持平不再重复计入未平单数）
+              if (pnlAmount > 0) {
+                profitTrades++;
+                totalProfitAmount += pnlAmount;
+                profitTradeDetails.push(detail);
+              } else if (pnlAmount < 0) {
+                lossTrades++;
+                totalLossAmount += Math.abs(pnlAmount);
+                lossTradeDetails.push(detail);
+              }
+            }
+          }
+
+          const winRate =
+            totalTrades > 0 ? (profitTrades / totalTrades) * 100 : 0;
+          const avgProfit =
+            profitTrades > 0 ? totalProfitAmount / profitTrades : 0;
+          const avgLoss = lossTrades > 0 ? totalLossAmount / lossTrades : 0;
+          const profitFactor = avgLoss > 0 ? avgProfit / avgLoss : 0;
+
+          return {
+            percentage: stopLossPercentage === -999 ? 0 : stopLossPercentage, // 显示为"真实订单"
+            totalProfit: Number(totalNetProfit.toFixed(2)),
+            totalProfitAmount: Number(totalProfitAmount.toFixed(2)),
+            totalLossAmount: Number(totalLossAmount.toFixed(2)),
+            winRate: Number(winRate.toFixed(1)),
+            totalTrades,
+            profitTrades,
+            lossTrades,
+            breakEvenTrades,
+            avgProfit: Number(avgProfit.toFixed(2)),
+            avgLoss: Number(avgLoss.toFixed(2)),
+            profitFactor: Number(profitFactor.toFixed(2)),
+            takeProfitTrades,
+            stopLossTrades,
+            normalExitTrades,
+            profitTradeDetails,
+            lossTradeDetails,
+            breakEvenTradeDetails,
+          };
+        })
+      );
+
+      // 找到总盈利最大的止损点
+      const bestLevel = riskLevels.reduce((best, current) => {
+        return current.totalProfit > best.totalProfit ? current : best;
+      });
+
+      const analysisResult: StopLossAnalysis = {
+        optimalStopLoss: {
+          percentage: bestLevel.percentage,
+          totalProfit: bestLevel.totalProfit,
+          totalProfitAmount: bestLevel.totalProfitAmount,
+          totalLossAmount: bestLevel.totalLossAmount,
+          winRate: bestLevel.winRate,
+          avgProfit: bestLevel.avgProfit,
+          avgLoss: bestLevel.avgLoss,
+          profitFactor: bestLevel.profitFactor,
+        },
+        riskLevels,
+      };
+
+      setAnalysis(analysisResult);
+    } catch (err) {
+      console.error("计算止损分析失败:", err);
+      setError(err instanceof Error ? err.message : "计算止损点时发生错误");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    if (open && !analysis && !loading) {
+      calculateStopLoss();
+    }
+  }, [open]);
+
+  useEffect(() => {
+    if (open) {
+      fetchRiskMatrix();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [open, symbol, positionSide, startTime, endTime]);
+
+  const handleRecalculate = () => {
+    setAnalysis(null);
+    calculateStopLoss();
+  };
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className={`${
+          isFullscreen
+            ? "max-w-none w-[95vw] h-[95vh]"
+            : "max-w-4xl w-[90vw] max-h-[80vh]"
+        } overflow-hidden`}
+      >
+        <DialogHeader className="flex-shrink-0">
+          <div className="flex items-center justify-between">
+            <DialogTitle className="flex items-center gap-2">
+              <Calculator className="w-5 h-5" />
+              最佳止盈止损分析 - {symbol}
+            </DialogTitle>
+            <div className="flex gap-2 mr-8">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleRecalculate}
+                disabled={loading}
+              >
+                {loading && <Loader2 className="w-4 h-4 mr-2 animate-spin" />}
+                重新计算
+              </Button>
+            </div>
+          </div>
+
+          {/* 移除止盈设置，统一按照不启用止盈计算 */}
+        </DialogHeader>
+
+        <div className="flex-1 overflow-auto">
+          {loading && (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-center">
+                <Loader2 className="w-8 h-8 animate-spin mx-auto mb-2" />
+                <p className="text-sm text-muted-foreground">
+                  正在获取数据并计算最佳止盈止损...
+                </p>
+                <p className="text-xs text-muted-foreground mt-1">
+                  基于交易期间的价格波动分析止损触发情况
+                </p>
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-center text-red-500">
+                <p className="font-medium">计算失败</p>
+                <p className="text-sm">{error}</p>
+              </div>
+            </div>
+          )}
+
+          {analysis && !loading && (
+            <div className="space-y-6">
+              {/* 最佳止盈止损推荐 */}
+              <div className="bg-muted/30 rounded-lg p-4">
+                <h3 className="font-semibold mb-3 flex items-center gap-2">
+                  <TrendingUp className="w-4 h-4 text-green-500" />
+                  最佳止损（基于最大总盈利）
+                </h3>
+                <div className="grid grid-cols-2 md:grid-cols-6 gap-4">
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-blue-600">
+                      {analysis.optimalStopLoss.percentage}%
+                    </p>
+                    <p className="text-xs text-muted-foreground">止损百分比</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-orange-600">
+                      ${analysis.optimalStopLoss.totalProfit.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">盈利</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">
+                      $
+                      {analysis.optimalStopLoss.totalProfitAmount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">盈利总额</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-red-600">
+                      -$
+                      {analysis.optimalStopLoss.totalLossAmount.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">亏损总额</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-600">
+                      {analysis.optimalStopLoss.winRate}%
+                    </p>
+                    <p className="text-xs text-muted-foreground">胜率</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-green-500">
+                      ${analysis.optimalStopLoss.avgProfit.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">平均盈利</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-red-500">
+                      ${analysis.optimalStopLoss.avgLoss.toLocaleString()}
+                    </p>
+                    <p className="text-xs text-muted-foreground">平均亏损</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-2xl font-bold text-purple-600">
+                      {analysis.optimalStopLoss.profitFactor}
+                    </p>
+                    <p className="text-xs text-muted-foreground">盈亏比</p>
+                  </div>
+                </div>
+              </div>
+
+              {/* 止盈止损矩阵（点击单元格查看明细） */}
+              <div>
+                <h3 className="font-semibold mb-3 flex items-center gap-2">
+                  <TrendingDown className="w-4 h-4 text-orange-500" />
+                  止盈止损矩阵（单元格为总浮盈=$实现+$浮动）
+                </h3>
+                {matrixLoading ? (
+                  <div className="p-4 text-sm text-muted-foreground">
+                    矩阵加载中...
+                  </div>
+                ) : takeProfitLevels.length > 0 && stopLossLevels.length > 0 ? (
+                  <div className="overflow-x-auto overflow-y-visible bg-white rounded-lg shadow-lg border border-gray-200 max-w-full">
+                    <table className="min-w-[1200px] w-full text-sm">
+                      <thead>
+                        <tr className="border-b-2 border-gray-300 bg-gradient-to-r from-blue-50 to-indigo-50">
+                          <th className="text-left p-3 sticky left-0 bg-gradient-to-r from-blue-100 to-indigo-100 z-10 font-bold text-gray-800 border-r border-gray-200"></th>
+                          {takeProfitLevels.map((tp) => (
+                            <th
+                              key={tp}
+                              className="p-3 text-center font-semibold text-gray-700 hover:bg-blue-100 transition-colors duration-200"
+                            >
+                              <span className="text-sm font-bold text-green-600">
+                                {tp}%
+                              </span>
+                            </th>
+                          ))}
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {stopLossLevels.map((sl) => (
+                          <tr
+                            key={sl}
+                            className="hover:bg-muted/20 border-b border-gray-100"
+                          >
+                            <td className="p-3 font-semibold sticky left-0 bg-gradient-to-r from-red-50 to-orange-50 z-10 border-r border-gray-200">
+                              <span className="text-sm font-bold text-red-600">
+                                {sl}%
+                              </span>
+                            </td>
+                            {takeProfitLevels.map((tp) => {
+                              const cell = cellMap.get(`${sl}|${tp}`);
+                              const rp = cell?.realizedPnl ?? 0;
+                              const up = cell?.unrealizedPnl ?? 0;
+                              const total = rp + up || 0;
+                              const textClass =
+                                total >= 0 ? "text-green-700" : "text-red-700";
+                              const bgClass =
+                                total > 0
+                                  ? "bg-green-50"
+                                  : total < 0
+                                  ? "bg-red-50"
+                                  : "bg-gray-50";
+                              return (
+                                <td key={tp} className="p-1">
+                                  <button
+                                    onClick={() => openMatrixDetail(sl, tp)}
+                                    className={`w-full h-full ${bgClass} rounded-lg border border-gray-200 hover:border-gray-400 hover:shadow-md text-center py-2 px-2 transition-all duration-200 transform hover:scale-105`}
+                                    title={`点击查看明细 (总:${total.toFixed(
+                                      2
+                                    )} 实现:${rp.toFixed(2)} 浮动:${up.toFixed(
+                                      2
+                                    )})`}
+                                  >
+                                    <div
+                                      className={`font-bold text-sm leading-5 ${textClass}`}
+                                    >
+                                      {total.toFixed(2)}
+                                    </div>
+                                    <div className="text-[10px] text-gray-500 mt-0.5">
+                                      实 {rp.toFixed(2)} 浮 {up.toFixed(2)}
+                                    </div>
+                                  </button>
+                                </td>
+                              );
+                            })}
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                ) : (
+                  <div className="text-muted-foreground text-sm">
+                    暂无矩阵数据。
+                  </div>
+                )}
+              </div>
+
+              {/* 分析结果说明 */}
+              <div className="bg-blue-50 dark:bg-blue-950/20 rounded-lg p-4">
+                <h4 className="font-medium mb-2 text-blue-800 dark:text-blue-200">
+                  分析结果说明
+                </h4>
+                <ul className="text-sm text-blue-700 dark:text-blue-300 space-y-1">
+                  <li>
+                    • <strong>总盈利</strong>：在该止损条件下，
+                    {analysis.riskLevels[0]?.totalTrades || 0}笔交易的总净盈利
+                  </li>
+                  <li>
+                    • <strong>最佳止损</strong>
+                    ：以总盈利最大化为目标选择的止损水平
+                  </li>
+                  <li>
+                    • <strong>计算方法</strong>
+                    ：基于1分钟K线数据按时间顺序精确判断止盈止损触发
+                  </li>
+                  <li>
+                    • <strong>止损逻辑</strong>
+                    ：当浮亏超过设定值时在止损价出场，否则按原计划出场
+                  </li>
+                  <li>
+                    • <strong>止盈逻辑</strong>
+                    ：当启用止盈且浮盈达到设定值时在止盈价出场，优先级高于止损
+                  </li>
+                  <li>
+                    • <strong>触发优先级</strong>
+                    ：按K线时间顺序检查，止盈条件先满足则止盈，否则检查止损
+                  </li>
+                  <li>• 蓝色高亮行为推荐的最佳止损点</li>
+                  <li>
+                    •
+                    表格中"止盈次数"、"止损次数"、"正常出场"显示不同出场方式的统计
+                  </li>
+                </ul>
+              </div>
+
+              {/* 使用建议 */}
+              <div className="bg-yellow-50 dark:bg-yellow-950/20 rounded-lg p-4">
+                <h4 className="font-medium mb-2 text-yellow-800 dark:text-yellow-200">
+                  止盈功能使用指南
+                </h4>
+                <div className="text-sm text-yellow-700 dark:text-yellow-300 space-y-2">
+                  <div>
+                    <strong>📈 如何使用止盈：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 勾选"启用止盈"复选框</li>
+                      <li>• 设置止盈百分比（如：5% 表示盈利5%时自动出场）</li>
+                      <li>• 点击"重新计算"查看加入止盈后的分析结果</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <strong>🎯 止盈设置建议：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 保守型：3-5%（适合震荡市场）</li>
+                      <li>• 平衡型：5-10%（适合趋势明确时）</li>
+                      <li>• 激进型：10-20%（适合强趋势市场）</li>
+                    </ul>
+                  </div>
+
+                  <div>
+                    <strong>⚠️ 注意事项：</strong>
+                    <ul className="ml-4 mt-1 space-y-1">
+                      <li>• 止盈过低可能错失更大收益，过高可能回撤较大</li>
+                      <li>• 止盈优先级高于止损，先达到止盈条件会优先执行</li>
+                      <li>• 建议结合技术分析设置止盈位（如阻力位附近）</li>
+                      <li>• 定期回测调整止盈策略以适应市场变化</li>
+                    </ul>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      </DialogContent>
+
+      {/* 交易列表对话框 */}
+      <Dialog open={showTradeList} onOpenChange={setShowTradeList}>
+        <DialogContent className="max-w-none w-[98vw] max-h-[90vh] overflow-hidden">
+          <DialogHeader>
+            <DialogTitle>{tradeListTitle}</DialogTitle>
+          </DialogHeader>
+          <div className="max-h-[82vh] overflow-auto">
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead>
+                  <tr className="border-b">
+                    <th className="text-left p-2 w-12">序号</th>
+                    <th className="text-left p-2">回合ID</th>
+                    <th className="text-left p-2">方向</th>
+                    <th className="text-left p-2">入场价</th>
+                    <th className="text-left p-2">原出场价</th>
+                    {!tradeListTitle.includes("未平单") && (
+                      <th className="text-left p-2">出场价</th>
+                    )}
+                    <th className="text-left p-2">数量</th>
+                    <th className="text-left p-2">最大浮亏%</th>
+                    <th className="text-left p-2">最大浮盈%</th>
+                    <th className="text-left p-2">是否止损</th>
+                    <th className="text-left p-2">是否止盈</th>
+                    <th className="text-left p-2">
+                      {tradeListTitle.includes("未平单")
+                        ? "浮盈亏率%"
+                        : "盈亏率%"}
+                    </th>
+                    <th className="text-left p-2">
+                      <button
+                        className="inline-flex items-center gap-1 hover:text-blue-600"
+                        onClick={() => {
+                          const nextAsc = sortKey === "pnl" ? !sortAsc : false;
+                          setSortKey("pnl");
+                          setSortAsc(nextAsc);
+                          setSelectedTrades((arr) => {
+                            const isBreakEvenList =
+                              tradeListTitle.includes("未平单");
+                            const amountOf = (t: TradeDetail) => {
+                              if (!isBreakEvenList) return t.pnlAmount;
+                              return t.floatingAmount ?? 0;
+                            };
+                            return [...arr].sort((a, b) =>
+                              nextAsc
+                                ? amountOf(a) - amountOf(b)
+                                : amountOf(b) - amountOf(a)
+                            );
+                          });
+                        }}
+                        title="按盈亏金额排序"
+                      >
+                        {tradeListTitle.includes("未平单")
+                          ? "浮盈亏金额($)"
+                          : "盈亏金额($)"}
+                        {sortKey !== "pnl" ? (
+                          <ChevronsUpDown className="w-3 h-3" />
+                        ) : sortAsc ? (
+                          <ArrowUp className="w-3 h-3" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3" />
+                        )}
+                      </button>
+                    </th>
+                    <th className="text-left p-2">
+                      <button
+                        className="inline-flex items-center gap-1 hover:text-blue-600"
+                        onClick={() => {
+                          const nextAsc =
+                            sortKey === "original" ? !sortAsc : false;
+                          setSortKey("original");
+                          setSortAsc(nextAsc);
+                          setSelectedTrades((arr) =>
+                            [...arr].sort((a, b) =>
+                              nextAsc
+                                ? a.originalPnlAmount - b.originalPnlAmount
+                                : b.originalPnlAmount - a.originalPnlAmount
+                            )
+                          );
+                        }}
+                        title="按原盈亏金额排序"
+                      >
+                        原盈亏金额($)
+                        {sortKey !== "original" ? (
+                          <ChevronsUpDown className="w-3 h-3" />
+                        ) : sortAsc ? (
+                          <ArrowUp className="w-3 h-3" />
+                        ) : (
+                          <ArrowDown className="w-3 h-3" />
+                        )}
+                      </button>
+                    </th>
+                    <th className="text-left p-2">开仓时间</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {selectedTrades.map((trade, index) => (
+                    <tr
+                      key={`${trade.roundId}-${index}`}
+                      className="border-b hover:bg-muted/20"
+                    >
+                      <td className="p-2 text-center">{index + 1}</td>
+                      <td className="p-2 font-mono text-xs">
+                        <KlineDialog
+                          round={
+                            {
+                              roundId: trade.roundId,
+                              symbol,
+                              exchange: "binance",
+                              market: "futures",
+                              positionSide: trade.positionSide,
+                              totalQuantity: trade.quantity,
+                              avgEntryPrice: trade.entryPrice,
+                              avgExitPrice: trade.exitPrice,
+                              realizedPnl:
+                                trade.originalPnlAmount ?? trade.pnlAmount,
+                              totalFees: 0,
+                              openTime: trade.openTime,
+                              closeTime: trade.closeTime,
+                              openTradeIds: trade.openTradeIds,
+                              closeTradeIds: trade.closeTradeIds || [],
+                            } as any
+                          }
+                          trigger={
+                            <button className="underline decoration-dotted hover:decoration-solid text-blue-600 hover:text-blue-800">
+                              {trade.roundId.slice(-8)}
+                            </button>
+                          }
+                        />
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.positionSide === "LONG"
+                              ? "bg-green-100 text-green-800"
+                              : "bg-red-100 text-red-800"
+                          }`}
+                        >
+                          {trade.positionSide === "LONG" ? "多单" : "空单"}
+                        </span>
+                      </td>
+                      <td className="p-2">${trade.entryPrice.toFixed(4)}</td>
+                      <td className="p-2">${trade.exitPrice.toFixed(4)}</td>
+                      {!tradeListTitle.includes("未平单") && (
+                        <td className="p-2">
+                          <span
+                            className={
+                              trade.wouldHitStopLoss
+                                ? "text-orange-600 font-semibold"
+                                : ""
+                            }
+                          >
+                            ${trade.finalPrice.toFixed(4)}
+                          </span>
+                        </td>
+                      )}
+                      <td className="p-2">{trade.quantity.toFixed(4)}</td>
+                      <td className="p-2">
+                        <span
+                          className={`${
+                            trade.maxDrawdownRate < -5
+                              ? "text-red-600"
+                              : trade.maxDrawdownRate < -2
+                              ? "text-orange-600"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {trade.maxDrawdownRate.toFixed(2)}%
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`${
+                            trade.maxProfitRate > 10
+                              ? "text-green-600"
+                              : trade.maxProfitRate > 5
+                              ? "text-green-500"
+                              : "text-gray-600"
+                          }`}
+                        >
+                          {trade.maxProfitRate.toFixed(2)}%
+                        </span>
+                      </td>
+
+                      <td className="p-2">
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.wouldHitStopLoss
+                              ? "bg-orange-100 text-orange-800"
+                              : "bg-gray-100 text-gray-800"
+                          }`}
+                        >
+                          {trade.wouldHitStopLoss ? "是" : "否"}
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`px-2 py-1 rounded text-xs ${
+                            trade.wouldHitTakeProfit
+                              ? "bg-green-100 text-green-800"
+                              : "bg-gray-100 text-gray-800"
+                          }`}
+                        >
+                          {trade.wouldHitTakeProfit ? "是" : "否"}
+                        </span>
+                      </td>
+                      <td className="p-2">
+                        {(() => {
+                          const isBreakEvenList =
+                            tradeListTitle.includes("未平单");
+                          const rate = !isBreakEvenList
+                            ? trade.pnlRate
+                            : trade.floatingRate ?? 0;
+                          return (
+                            <span
+                              className={`font-semibold ${
+                                rate > 0 ? "text-green-600" : "text-red-600"
+                              }`}
+                            >
+                              {rate > 0 ? "+" : ""}
+                              {rate.toFixed(2)}%
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2">
+                        {(() => {
+                          const isBreakEvenList =
+                            tradeListTitle.includes("未平单");
+                          const amount = !isBreakEvenList
+                            ? trade.pnlAmount
+                            : trade.floatingAmount ?? 0;
+                          return (
+                            <span
+                              className={`font-semibold ${
+                                amount > 0 ? "text-green-600" : "text-red-600"
+                              }`}
+                            >
+                              {amount > 0 ? "+" : ""}${amount.toFixed(2)}
+                            </span>
+                          );
+                        })()}
+                      </td>
+                      <td className="p-2">
+                        <span
+                          className={`font-semibold ${
+                            trade.originalPnlAmount > 0
+                              ? "text-green-600"
+                              : "text-red-600"
+                          }`}
+                        >
+                          {trade.originalPnlAmount > 0 ? "+" : ""}$
+                          {trade.originalPnlAmount.toFixed(2)}
+                        </span>
+                      </td>
+                      <td className="p-2 text-xs text-muted-foreground">
+                        {new Date(trade.openTime).toLocaleString()}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </Dialog>
+  );
+}
