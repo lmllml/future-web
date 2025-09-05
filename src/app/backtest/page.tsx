@@ -19,7 +19,7 @@ export default function BacktestPage({
   const name = searchParams.name || "";
   const symbol = searchParams.symbol || "";
   const status = searchParams.status || "";
-  const strategyType = searchParams.strategyType || "";
+  const strategyType = searchParams.strategyType || "";  
   const startTime = searchParams.startTime || "";
   const endTime = searchParams.endTime || "";
   const sort = searchParams.sort || "createdAt-desc";

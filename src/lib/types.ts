@@ -54,7 +54,7 @@ export interface TradeData {
   commission: number;
   commissionAsset: string;
   side?: "BUY" | "SELL";
-  positionSide?: "LONG" | "SHORT" | "BOTH";
+  positionSide?: "LONG" | "SHORT";
   reduceOnly?: boolean;
   tradeType?: string;
 }

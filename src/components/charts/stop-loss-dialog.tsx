@@ -20,10 +20,6 @@ import {
   Target,
 } from "lucide-react";
 import { cryptoApi } from "@/lib/api";
-import {
-  klineCacheService,
-  type KlineData as CachedKlineData,
-} from "@/lib/kline-cache";
 import { KlineDialog } from "@/components/charts/kline-dialog";
 // Worker 用于并行计算不同止损等级
 // @ts-ignore - bundled by Next/webpack
@@ -454,16 +450,17 @@ export function RiskAnalysisDialog({
           return klineCache.get(trade.roundId) || [];
         }
         try {
-          // 使用缓存服务获取K线数据
-          const data = await klineCacheService.getKlinesForRound({
-            roundId: trade.roundId,
+          // 直接使用API获取K线数据
+          const response = await cryptoApi.listKlines<{ data: KlineData[] }>({
             symbol: trade.symbol,
             exchange: (trade as any).exchange || "binance",
             market: "futures",
             interval: "1m", // 恢复 1m 粒度确保极值与早停判定准确
-            openTime: trade.openTime,
-            closeTime: trade.closeTime,
+            startTime: trade.openTime,
+            endTime: trade.closeTime,
+            order: "asc",
           });
+          const data = response.data;
           klineCache.set(trade.roundId, data || null);
           return data || [];
         } catch {
@@ -485,15 +482,9 @@ export function RiskAnalysisDialog({
           return (klineCache.get(cacheKey) as KlineData[]) || [];
         }
         try {
-          // 离线模式：仅读取缓存中该 symbol 的可用结束时间，不做网络扩展
-          const latestEnd =
-            klineCacheService.getCachedEndTime({
-              symbol: trade.symbol,
-              exchange: (trade as any).exchange || "binance",
-              market: (trade as any).market || "futures",
-              interval: "1m",
-            }) || new Date().toISOString();
-          const data = await klineCacheService.getKlines({
+          // 直接获取从开仓时间到当前时间的K线数据
+          const latestEnd = new Date().toISOString();
+          const response = await cryptoApi.listKlines<{ data: KlineData[] }>({
             symbol: trade.symbol,
             exchange: (trade as any).exchange || "binance",
             market: (trade as any).market || "futures",
@@ -502,6 +493,7 @@ export function RiskAnalysisDialog({
             endTime: latestEnd,
             order: "asc",
           });
+          const data = response.data;
           klineCache.set(cacheKey, data || null);
           return data || [];
         } catch {
@@ -526,8 +518,7 @@ export function RiskAnalysisDialog({
         }>
       > {
         if (!trade.openTradeIds || trade.openTradeIds.length < 2) return [];
-        // 离线模式：跳过网络请求，直接返回空，计算仅依赖预加载的K线数据
-        if (klineCacheService.isOfflineMode()) return [];
+        // 移除离线模式检查，直接获取数据
         if (openTradesCache.has(trade.roundId)) {
           return openTradesCache.get(trade.roundId) || [];
         }
@@ -577,13 +568,20 @@ export function RiskAnalysisDialog({
         if (inflight) return inflight;
         const fetchP = (async () => {
           try {
-            // 使用缓存服务获取最新价格
-            const price = await klineCacheService.getLatestPrice({
+            // 直接获取最新价格 - 从最近1小时的K线数据中获取最新收盘价
+            const endTime = new Date();
+            const startTime = new Date(endTime.getTime() - 60 * 60 * 1000); // 1小时前
+            const response = await cryptoApi.listKlines<{ data: KlineData[] }>({
               symbol: trade.symbol,
               exchange: (trade as any).exchange || "binance",
               market: (trade as any).market || "futures",
               interval: "1m",
+              startTime: startTime.toISOString(),
+              endTime: endTime.toISOString(),
+              order: "desc",
+              limit: 1,
             });
+            const price = response.data && response.data.length > 0 ? response.data[0].close : null;
             if (price !== null) {
               latestCloseCache.set(symbolKey, { price, cachedAt: Date.now() });
             }
@@ -598,90 +596,10 @@ export function RiskAnalysisDialog({
         return fetchP;
       }
 
-      // 预热所有回合的缓存，避免在第一个止损等级时串行请求
+      // 移除预热缓存功能，直接进行计算
       async function warmCaches() {
-        // 离线模式下，假设页面已预加载 1m 数据；这里不再触发任何网络请求
-        if (!klineCacheService.isOfflineMode()) {
-          await klineCacheService.warmupCache(
-            allTrades.map((t) => ({
-              symbol: t.symbol,
-              exchange: (t as any).exchange || "binance",
-              market: "futures",
-              openTime: t.openTime,
-              closeTime: t.closeTime,
-            })),
-            ["1m"]
-          );
-        }
-
-        // 继续预热开仓成交数据
-        const concurrency = 10;
-        for (let i = 0; i < allTrades.length; i += concurrency) {
-          const batch = allTrades.slice(i, i + concurrency);
-          await Promise.all([
-            // 并发拉取每个回合的首两笔开仓成交
-            ...batch.map((t) => getFirstTwoOpensOnce(t as any)),
-          ]);
-        }
-
-        // 进一步：把每个 symbol 的 K 线扩展到“当前时刻”，避免后续频繁 extend 请求
-        const bySymbol = new Map<
-          string,
-          { symbol: string; exchange: string; market: string; minOpen: string }
-        >();
-        for (const t of allTrades) {
-          const key = `${(t as any).exchange || "binance"}:$${t.symbol}:$${
-            (t as any).market || "futures"
-          }`;
-          const existing = bySymbol.get(key);
-          const openIso = t.openTime;
-          if (!existing) {
-            bySymbol.set(key, {
-              symbol: t.symbol,
-              exchange: (t as any).exchange || "binance",
-              market: (t as any).market || "futures",
-              minOpen: openIso,
-            });
-          } else if (
-            new Date(openIso).getTime() < new Date(existing.minOpen).getTime()
-          ) {
-            existing.minOpen = openIso;
-          }
-        }
-        const groups = Array.from(bySymbol.values());
-        const baseSymbol = groups[0]?.symbol ?? allTrades[0]?.symbol;
-        const baseExchange =
-          groups[0]?.exchange ?? (allTrades[0] as any)?.exchange ?? "binance";
-        const baseMarket =
-          groups[0]?.market ?? (allTrades[0] as any)?.market ?? "futures";
-        const nowIso =
-          (baseSymbol
-            ? klineCacheService.getCachedEndTime({
-                symbol: baseSymbol,
-                exchange: baseExchange,
-                market: baseMarket,
-                interval: "1m",
-              })
-            : null) || new Date().toISOString();
-        const maxParallel = 6;
-        // 离线模式：不做 extendTimeRange；在线模式才执行扩展
-        if (!klineCacheService.isOfflineMode()) {
-          for (let i = 0; i < groups.length; i += maxParallel) {
-            const batch = groups.slice(i, i + maxParallel);
-            await Promise.all(
-              batch.map((g) =>
-                klineCacheService.extendTimeRange({
-                  symbol: g.symbol,
-                  exchange: g.exchange,
-                  market: g.market,
-                  interval: "1m",
-                  newStartTime: g.minOpen,
-                  newEndTime: nowIso,
-                })
-              )
-            );
-          }
-        }
+        // 不再需要预热缓存，直接返回
+        return;
       }
 
       await warmCaches();

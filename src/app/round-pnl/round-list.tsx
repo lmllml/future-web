@@ -2,7 +2,6 @@
 
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { cryptoApi } from "@/lib/api";
-import { klineCacheService } from "@/lib/kline-cache";
 import { RoundPnlData, KlineData } from "@/lib/types";
 import { Button } from "@/components/ui/button";
 import { KlineDialog } from "@/components/charts/kline-dialog";
@@ -97,16 +96,18 @@ function MaxDrawdownBadge({ round }: { round: RoundPnlData }) {
     const calculateMaxDrawdown = async () => {
       setLoading(true);
       try {
-        // 使用缓存服务获取交易期间的K线数据（使用1分钟K线获得更精确的价格数据）
-        const data = await klineCacheService.getKlinesForRound({
-          roundId: round.roundId,
+        // 直接使用API获取交易期间的K线数据（使用1分钟K线获得更精确的价格数据）
+        const response = await cryptoApi.listKlines<{ data: KlineData[] }>({
           symbol: round.symbol,
           exchange: round.exchange || "binance",
           market: "futures",
           interval: "1m",
-          openTime: round.openTime,
-          closeTime: round.closeTime,
+          startTime: round.openTime,
+          endTime: round.closeTime,
+          order: "asc",
         });
+        
+        const data = response.data;
 
         if (!data || data.length === 0) {
           setMaxDrawdown(null);
